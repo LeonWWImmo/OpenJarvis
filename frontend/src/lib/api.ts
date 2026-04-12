@@ -31,7 +31,17 @@ export async function initApiBase(): Promise<void> {
   }
 }
 
-const DESKTOP_API_FALLBACK = 'http://127.0.0.1:8000';
+const DESKTOP_API_FALLBACK = 'http://localhost:8000';
+
+const isLocalDevBrowser = (): boolean => {
+  if (typeof window === 'undefined') return false;
+  const { hostname, port, protocol } = window.location;
+  if (!(protocol === 'http:' || protocol === 'https:')) return false;
+  return (
+    (hostname === '127.0.0.1' || hostname === 'localhost') &&
+    (port === '5173' || port === '5174')
+  );
+};
 
 const getSettingsApiUrl = (): string => {
   try {
@@ -45,6 +55,7 @@ const getSettingsApiUrl = (): string => {
 };
 
 export const getBase = (): string => {
+  if (!isTauri() && isLocalDevBrowser()) return '';
   const settingsUrl = getSettingsApiUrl();
   if (settingsUrl) return settingsUrl;
   if (import.meta.env.VITE_API_URL) return import.meta.env.VITE_API_URL;
@@ -77,7 +88,27 @@ export async function getSetupStatus(): Promise<SetupStatus | null> {
     const { invoke } = await import('@tauri-apps/api/core');
     return await invoke<SetupStatus>('get_setup_status');
   } catch {
-    return null;
+    try {
+      const [serverReady, models] = await Promise.all([
+        checkHealth(),
+        fetchModels().catch(() => [] as ModelInfo[]),
+      ]);
+      const modelReady = models.length > 0;
+      return {
+        phase: serverReady && modelReady ? 'ready' : serverReady ? 'model' : 'server',
+        detail: serverReady
+          ? modelReady
+            ? 'Local backend is ready'
+            : 'Backend is ready, waiting for a model'
+          : 'Waiting for local backend',
+        ollama_ready: serverReady,
+        server_ready: serverReady,
+        model_ready: modelReady,
+        error: null,
+      };
+    } catch {
+      return null;
+    }
   }
 }
 

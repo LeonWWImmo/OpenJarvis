@@ -151,6 +151,32 @@ async fn fetch_agents(api_url: String) -> Result<serde_json::Value, String> {
     Ok(body)
 }
 
+/// Send a non-streaming chat completion request via Rust.
+#[tauri::command]
+async fn chat_completion(
+    api_url: String,
+    body: serde_json::Value,
+) -> Result<serde_json::Value, String> {
+    let url = format!("{}/v1/chat/completions", api_url);
+    let client = reqwest::Client::new();
+    let resp = client
+        .post(&url)
+        .json(&body)
+        .send()
+        .await
+        .map_err(|e| format!("Connection failed: {}", e))?;
+
+    if !resp.status().is_success() {
+        let status = resp.status();
+        let detail = resp.text().await.unwrap_or_default();
+        return Err(format!("HTTP {}: {}", status, detail));
+    }
+
+    resp.json()
+        .await
+        .map_err(|e| format!("Invalid response: {}", e))
+}
+
 /// Launch the `jarvis` CLI command via shell.
 #[tauri::command]
 async fn run_jarvis_command(args: Vec<String>) -> Result<String, String> {
@@ -239,6 +265,7 @@ pub fn run() {
             fetch_memory_stats,
             search_memory,
             fetch_agents,
+            chat_completion,
             run_jarvis_command,
         ])
         .run(tauri::generate_context!())

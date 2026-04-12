@@ -977,6 +977,35 @@ async fn fetch_models(api_url: String) -> Result<serde_json::Value, String> {
 }
 
 #[tauri::command]
+async fn chat_completion(
+    api_url: String,
+    body: serde_json::Value,
+) -> Result<serde_json::Value, String> {
+    let base = if api_url.is_empty() {
+        api_base()
+    } else {
+        api_url
+    };
+    let client = reqwest::Client::new();
+    let resp = client
+        .post(format!("{}/v1/chat/completions", base))
+        .json(&body)
+        .send()
+        .await
+        .map_err(|e| format!("Connection failed: {}", e))?;
+
+    if !resp.status().is_success() {
+        let status = resp.status();
+        let detail = resp.text().await.unwrap_or_default();
+        return Err(format!("HTTP {}: {}", status, detail));
+    }
+
+    resp.json()
+        .await
+        .map_err(|e| format!("Invalid response: {}", e))
+}
+
+#[tauri::command]
 async fn run_jarvis_command(args: Vec<String>) -> Result<String, String> {
     let mut cmd_args = vec!["run".to_string(), "jarvis".to_string()];
     cmd_args.extend(args);
@@ -1283,6 +1312,7 @@ pub fn run() {
             search_memory,
             fetch_agents,
             fetch_models,
+            chat_completion,
             run_jarvis_command,
             fetch_savings,
             submit_savings,

@@ -1,5 +1,5 @@
 import type { SSEEvent } from '../types';
-import { getBase } from './api';
+import { getBase, isTauri } from './api';
 
 export interface ChatRequest {
   model: string;
@@ -13,6 +13,61 @@ export async function* streamChat(
   request: ChatRequest,
   signal?: AbortSignal,
 ): AsyncGenerator<SSEEvent> {
+  if (isTauri()) {
+    const { invoke } = await import('@tauri-apps/api/core');
+    const base = getBase();
+    const response = await invoke<any>('chat_completion', {
+      apiUrl: base,
+      body: { ...request, stream: false },
+    });
+
+    const choice = response?.choices?.[0];
+    const content = choice?.message?.content || '';
+    const usage = response?.usage;
+    const complexity = response?.complexity;
+
+    if (signal?.aborted) {
+      const err = new Error('The operation was aborted.');
+      (err as Error & { name: string }).name = 'AbortError';
+      throw err;
+    }
+
+    yield {
+      data: JSON.stringify({
+        id: response?.id || '',
+        object: 'chat.completion.chunk',
+        created: response?.created,
+        model: response?.model || request.model,
+        choices: [{ index: 0, delta: { role: 'assistant' }, finish_reason: null }],
+      }),
+    };
+
+    if (content) {
+      yield {
+        data: JSON.stringify({
+          id: response?.id || '',
+          object: 'chat.completion.chunk',
+          created: response?.created,
+          model: response?.model || request.model,
+          choices: [{ index: 0, delta: { content }, finish_reason: null }],
+        }),
+      };
+    }
+
+    yield {
+      data: JSON.stringify({
+        id: response?.id || '',
+        object: 'chat.completion.chunk',
+        created: response?.created,
+        model: response?.model || request.model,
+        choices: [{ index: 0, delta: {}, finish_reason: choice?.finish_reason || 'stop' }],
+        usage,
+        complexity,
+      }),
+    };
+    return;
+  }
+
   const base = getBase();
   const response = await fetch(`${base}/v1/chat/completions`, {
     method: 'POST',

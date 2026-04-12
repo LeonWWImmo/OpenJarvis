@@ -7,7 +7,7 @@ import pathlib
 import time
 
 from fastapi import FastAPI
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, Response
 from fastapi.staticfiles import StaticFiles
 
 from openjarvis.server.api_routes import include_all_routes
@@ -181,14 +181,49 @@ def create_app(
 
     from fastapi.middleware.cors import CORSMiddleware
 
-    _origins = cors_origins if cors_origins is not None else ["*"]
+    _origins = list(cors_origins) if cors_origins is not None else ["*"]
+    for _origin in (
+        "http://tauri.localhost",
+        "http://tauri.localhost:80",
+        "https://tauri.localhost",
+        "https://tauri.localhost:443",
+    ):
+        if _origin not in _origins:
+            _origins.append(_origin)
     app.add_middleware(
         CORSMiddleware,
         allow_origins=_origins,
+        allow_origin_regex=r"^https?://(localhost|127\.0\.0\.1|tauri\.localhost)(:\d+)?$",
         allow_credentials=True,
         allow_methods=["*"],
         allow_headers=["*"],
     )
+
+    @app.middleware("http")
+    async def _local_preflight_passthrough(request, call_next):
+        if request.method == "OPTIONS":
+            origin = request.headers.get("origin", "")
+            req_headers = request.headers.get("access-control-request-headers", "*")
+            req_method = request.headers.get("access-control-request-method", "POST")
+            is_local = (
+                origin.startswith("http://127.0.0.1:")
+                or origin.startswith("http://localhost:")
+                or origin == "tauri://localhost"
+                or origin == "http://tauri.localhost"
+                or origin == "https://tauri.localhost"
+            )
+            if is_local:
+                return Response(
+                    status_code=200,
+                    headers={
+                        "Access-Control-Allow-Origin": origin,
+                        "Access-Control-Allow-Credentials": "true",
+                        "Access-Control-Allow-Methods": req_method,
+                        "Access-Control-Allow-Headers": req_headers,
+                        "Vary": "Origin",
+                    },
+                )
+        return await call_next(request)
 
     # Store dependencies in app state
     app.state.engine = engine
