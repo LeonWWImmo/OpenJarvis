@@ -6,7 +6,6 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-import openjarvis
 from openjarvis.core.config import JarvisConfig
 from openjarvis.sdk import Jarvis, MemoryHandle
 
@@ -39,7 +38,7 @@ class TestJarvisInit:
 
     def test_version_property(self):
         j = Jarvis(config=JarvisConfig())
-        assert j.version == openjarvis.__version__
+        assert j.version == "0.1.0"
         j.close()
 
     def test_engine_key_override(self):

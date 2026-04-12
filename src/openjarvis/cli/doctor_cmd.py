@@ -170,13 +170,7 @@ def _check_default_model() -> CheckResult:
     from openjarvis.core.registry import EngineRegistry
     from openjarvis.engine import _discovery
 
-    preferred = config.intelligence.preferred_engine or config.engine.default
-    check_order = []
-    if preferred:
-        check_order.append(preferred)
-    check_order += [k for k in sorted(EngineRegistry.keys()) if k != preferred]
-
-    for key in check_order:
+    for key in sorted(EngineRegistry.keys()):
         try:
             engine = _discovery._make_engine(key, config)
             if engine.health():
