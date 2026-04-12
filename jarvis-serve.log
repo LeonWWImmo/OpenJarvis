@@ -1,0 +1,2 @@
+INFO:     127.0.0.1:62887 - "GET /models HTTP/1.1" 404 Not Found
+INFO:     127.0.0.1:62891 - "GET /v1/models HTTP/1.1" 200 OK
