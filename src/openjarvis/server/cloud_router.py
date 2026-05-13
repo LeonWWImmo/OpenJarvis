@@ -284,7 +284,30 @@ async def _stream_google(
 
 
 def _ollama_host() -> str:
-    return os.environ.get("OLLAMA_HOST", "http://localhost:11434").rstrip("/")
+    return os.environ.get("OLLAMA_HOST", "http://127.0.0.1:11434").rstrip("/")
+
+
+def _ollama_num_ctx() -> int:
+    raw = os.environ.get("OPENJARVIS_NUM_CTX") or os.environ.get(
+        "OLLAMA_CONTEXT_LENGTH",
+        "2048",
+    )
+    try:
+        return max(512, int(raw))
+    except (TypeError, ValueError):
+        return 2048
+
+
+def _ollama_keep_alive() -> str:
+    return os.environ.get("OPENJARVIS_OLLAMA_KEEP_ALIVE", "30m")
+
+
+def _ollama_num_gpu() -> int:
+    raw = os.environ.get("OPENJARVIS_OLLAMA_NUM_GPU", "0")
+    try:
+        return max(0, int(raw))
+    except (TypeError, ValueError):
+        return 0
 
 
 async def stream_local(
@@ -304,6 +327,8 @@ async def stream_local(
         "options": {
             "temperature": temperature,
             "num_predict": max_tokens,
+            "num_ctx": _ollama_num_ctx(),
+            "num_gpu": _ollama_num_gpu(),
         },
     }
     host = _ollama_host()

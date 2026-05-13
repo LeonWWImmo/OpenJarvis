@@ -13,12 +13,29 @@ import {
   Download,
   Upload,
   Trash2,
-  Mic,
-  Key,
+  Volume2,
+  FolderOpen,
+  RefreshCw,
   Search,
 } from 'lucide-react';
 import { useAppStore, type ThemeMode } from '../lib/store';
-import { checkHealth, fetchSpeechHealth } from '../lib/api';
+import {
+  checkHealth,
+  fetchModels,
+  fetchServerInfo,
+  fetchSpeechHealth,
+  getMemoryStatus,
+  listTtsVoices,
+  openLocalTarget,
+  openMemoryTarget,
+  searchMemory,
+  speakText,
+  syncMemoryBrain,
+  type LocalTarget,
+  type MemorySearchResult,
+  type MemoryStatus,
+  type TtsVoice,
+} from '../lib/api';
 
 function OllamaModelList() {
   const [models, setModels] = useState<Array<{ name: string; size: number }>>([]);
@@ -107,6 +124,69 @@ function SettingRow({ label, description, children }: { label: string; descripti
   );
 }
 
+function MemoryOpenButton({ target, children }: { target: 'vault' | 'inbox' | 'long_term' | 'profile'; children: React.ReactNode }) {
+  const [failed, setFailed] = useState(false);
+
+  const open = async () => {
+    setFailed(false);
+    try {
+      await openMemoryTarget(target);
+    } catch {
+      setFailed(true);
+      setTimeout(() => setFailed(false), 2000);
+    }
+  };
+
+  return (
+    <button
+      onClick={open}
+      className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition-colors cursor-pointer"
+      style={{
+        background: failed ? 'rgba(220,38,38,0.12)' : 'var(--color-bg-secondary)',
+        color: failed ? 'var(--color-error)' : 'var(--color-text-secondary)',
+        border: failed ? '1px solid var(--color-error)' : '1px solid var(--color-border)',
+      }}
+      title={failed ? 'Could not open memory file' : undefined}
+    >
+      <FolderOpen size={12} /> {failed ? 'Failed' : children}
+    </button>
+  );
+}
+
+function LocalOpenButton({ target, children }: { target: LocalTarget; children: React.ReactNode }) {
+  const [failed, setFailed] = useState(false);
+
+  const open = async () => {
+    setFailed(false);
+    try {
+      await openLocalTarget(target);
+    } catch {
+      setFailed(true);
+      setTimeout(() => setFailed(false), 2000);
+    }
+  };
+
+  return (
+    <button
+      onClick={open}
+      className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition-colors cursor-pointer"
+      style={{
+        background: failed ? 'rgba(220,38,38,0.12)' : 'var(--color-bg-secondary)',
+        color: failed ? 'var(--color-error)' : 'var(--color-text-secondary)',
+        border: failed ? '1px solid var(--color-error)' : '1px solid var(--color-border)',
+      }}
+      title={failed ? 'Could not open local target' : undefined}
+    >
+      <FolderOpen size={12} /> {failed ? 'Failed' : children}
+    </button>
+  );
+}
+
+function formatMemoryTime(value: number | null | undefined): string {
+  if (!value) return 'missing';
+  return new Date(value * 1000).toLocaleString();
+}
+
 const themeOptions: { value: ThemeMode; label: string; icon: typeof Sun }[] = [
   { value: 'light', label: 'Light', icon: Sun },
   { value: 'dark', label: 'Dark', icon: Moon },
@@ -120,18 +200,157 @@ export function SettingsPage() {
   const serverInfo = useAppStore((s) => s.serverInfo);
   const [healthy, setHealthy] = useState<boolean | null>(null);
   const [speechBackendAvailable, setSpeechBackendAvailable] = useState<boolean | null>(null);
+  const [browserSpeechAvailable, setBrowserSpeechAvailable] = useState(false);
+  const [ttsVoices, setTtsVoices] = useState<TtsVoice[]>([]);
   const [saved, setSaved] = useState(false);
+  const [memoryStatus, setMemoryStatus] = useState<MemoryStatus | null>(null);
+  const [memorySyncing, setMemorySyncing] = useState(false);
+  const [memorySyncError, setMemorySyncError] = useState<string | null>(null);
+  const [memoryQuery, setMemoryQuery] = useState('');
+  const [memorySearchResults, setMemorySearchResults] = useState<MemorySearchResult[]>([]);
+  const [memorySearching, setMemorySearching] = useState(false);
+  const [memorySearchError, setMemorySearchError] = useState<string | null>(null);
+  const [selfTestRunning, setSelfTestRunning] = useState(false);
+  const [selfTestResults, setSelfTestResults] = useState<Array<{ label: string; ok: boolean; detail: string }>>([]);
 
   useEffect(() => {
+    const win = window as any;
+    setBrowserSpeechAvailable(Boolean(win.SpeechRecognition || win.webkitSpeechRecognition));
     checkHealth().then(setHealthy);
     fetchSpeechHealth()
       .then((h) => setSpeechBackendAvailable(h.available))
       .catch(() => setSpeechBackendAvailable(false));
-  }, []);
+    listTtsVoices()
+      .then((voices) => {
+        setTtsVoices(voices);
+        if (!settings.ttsVoiceName && voices.some((voice) => voice.name === 'Kokoro George UK')) {
+          updateSettings({ ttsVoiceName: 'Kokoro George UK' });
+        } else if (!settings.ttsVoiceName && voices.some((voice) => voice.name === 'Piper Alan UK')) {
+          updateSettings({ ttsVoiceName: 'Piper Alan UK' });
+        }
+      })
+      .catch(() => setTtsVoices([]));
+    getMemoryStatus().then(setMemoryStatus).catch(() => setMemoryStatus(null));
+  }, [settings.ttsVoiceName, updateSettings]);
 
   const showSaved = () => {
     setSaved(true);
     setTimeout(() => setSaved(false), 1500);
+  };
+
+  const handleMemorySync = async () => {
+    setMemorySyncing(true);
+    setMemorySyncError(null);
+    try {
+      await syncMemoryBrain();
+      setMemoryStatus(await getMemoryStatus());
+      showSaved();
+    } catch (error) {
+      setMemorySyncError(error instanceof Error ? error.message : 'Brain sync failed');
+    } finally {
+      setMemorySyncing(false);
+    }
+  };
+
+  const handleMemorySearch = async () => {
+    const query = memoryQuery.trim();
+    if (!query) return;
+    setMemorySearching(true);
+    setMemorySearchError(null);
+    try {
+      setMemorySearchResults(await searchMemory(query, 5));
+    } catch (error) {
+      setMemorySearchError(error instanceof Error ? error.message : 'Brain search failed');
+      setMemorySearchResults([]);
+    } finally {
+      setMemorySearching(false);
+    }
+  };
+
+  const handleSelfTest = async () => {
+    setSelfTestRunning(true);
+    const results: Array<{ label: string; ok: boolean; detail: string }> = [];
+
+    const addResult = (label: string, ok: boolean, detail: string) => {
+      results.push({ label, ok, detail });
+      setSelfTestResults([...results]);
+    };
+
+    const backendOk = await checkHealth();
+    addResult('Backend', backendOk, backendOk ? 'API server reachable' : 'API server not reachable');
+
+    try {
+      const info = await fetchServerInfo();
+      addResult('Inference', true, `${info.engine} / ${info.model}`);
+    } catch (error) {
+      addResult('Inference', false, error instanceof Error ? error.message : 'Model info unavailable');
+    }
+
+    try {
+      const models = await fetchModels();
+      addResult('Ollama models', models.length > 0, models.length > 0 ? `${models.length} local model(s) found` : 'No local models found');
+    } catch (error) {
+      addResult('Ollama models', false, error instanceof Error ? error.message : 'Model list unavailable');
+    }
+
+    try {
+      const speech = await fetchSpeechHealth();
+      addResult('Speech', speech.available, speech.available ? `${speech.backend} available` : 'Speech backend unavailable');
+    } catch (error) {
+      addResult('Speech', false, error instanceof Error ? error.message : 'Speech check failed');
+    }
+
+    try {
+      const memory = await getMemoryStatus();
+      addResult('Jarvis Brain', Boolean(memory), memory?.needs_sync ? 'Vault found, sync recommended' : memory ? 'Vault and memory DB reachable' : 'Desktop memory status unavailable');
+      if (memory) setMemoryStatus(memory);
+    } catch (error) {
+      addResult('Jarvis Brain', false, error instanceof Error ? error.message : 'Brain status failed');
+    }
+
+    setSelfTestRunning(false);
+  };
+
+  const chooseJarvisVoice = () => {
+    const kokoroGeorge = ttsVoices.find((voice) => voice.name === 'Kokoro George UK');
+    if (kokoroGeorge) {
+      updateSettings({
+        ttsVoiceName: kokoroGeorge.name,
+        ttsRate: -1,
+        ttsVolume: 100,
+      });
+      showSaved();
+      return;
+    }
+    const piperAlan = ttsVoices.find((voice) => voice.name === 'Piper Alan UK');
+    if (piperAlan) {
+      updateSettings({
+        ttsVoiceName: piperAlan.name,
+        ttsRate: -1,
+        ttsVolume: 100,
+      });
+      showSaved();
+      return;
+    }
+    const candidates = ['george', 'ryan', 'guy', 'mark', 'david', 'james', 'richard', 'daniel'];
+    const byName = ttsVoices.find((voice) => candidates.some((candidate) => voice.name.toLowerCase().includes(candidate)));
+    const british = ttsVoices.find((voice) => voice.culture?.toLowerCase().startsWith('en-gb'));
+    const male = ttsVoices.find((voice) => voice.gender?.toLowerCase() === 'male');
+    const selected = byName || british || male || ttsVoices[0];
+    updateSettings({
+      ttsVoiceName: selected?.name || '',
+      ttsRate: -1,
+      ttsVolume: 100,
+    });
+    showSaved();
+  };
+
+  const testVoice = () => {
+    void speakText('Good evening, Sir. I am online, listening, and ready when you are.', {
+      voiceName: settings.ttsVoiceName,
+      rate: settings.ttsRate,
+      volume: settings.ttsVolume,
+    });
   };
 
   const handleExport = () => {
@@ -271,6 +490,47 @@ export function SettingsPage() {
             </SettingRow>
           </Section>
 
+          {/* Self-test */}
+          <Section title="Self-test">
+            <SettingRow label="Local assistant check" description="Checks backend, model, Ollama, speech and Obsidian brain">
+              <button
+                onClick={handleSelfTest}
+                disabled={selfTestRunning}
+                className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition-colors cursor-pointer disabled:opacity-60 disabled:cursor-default"
+                style={{
+                  background: 'var(--color-bg-secondary)',
+                  color: 'var(--color-text-secondary)',
+                  border: '1px solid var(--color-border)',
+                }}
+              >
+                <RefreshCw size={12} className={selfTestRunning ? 'animate-spin' : ''} />
+                {selfTestRunning ? 'Running...' : 'Run self-test'}
+              </button>
+            </SettingRow>
+            {selfTestResults.length > 0 && (
+              <div className="grid gap-2 mt-2">
+                {selfTestResults.map((result) => (
+                  <div
+                    key={result.label}
+                    className="flex items-center justify-between rounded-lg px-3 py-2 text-xs"
+                    style={{ background: 'var(--color-bg-secondary)', border: '1px solid var(--color-border-subtle)' }}
+                  >
+                    <span className="flex items-center gap-2" style={{ color: 'var(--color-text)' }}>
+                      <span
+                        className="w-2 h-2 rounded-full"
+                        style={{ background: result.ok ? 'var(--color-success)' : 'var(--color-error)' }}
+                      />
+                      {result.label}
+                    </span>
+                    <span className="text-right" style={{ color: 'var(--color-text-tertiary)' }}>
+                      {result.detail}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            )}
+          </Section>
+
           {/* Models */}
           <Section title="Models">
             <SettingRow label="Local models (Ollama)" description="Models available for local inference">
@@ -357,33 +617,288 @@ export function SettingsPage() {
                 />
               </button>
             </SettingRow>
-            <SettingRow label="Backend status" description="Requires Whisper, Deepgram, or another speech backend">
+            <SettingRow label="Wake word" description="Say the wake word to start a short voice capture automatically">
+              <button
+                onClick={() => { updateSettings({ wakeWordEnabled: !settings.wakeWordEnabled, speechEnabled: true }); showSaved(); }}
+                className="relative w-11 h-6 rounded-full transition-colors cursor-pointer"
+                style={{
+                  background: settings.wakeWordEnabled ? 'var(--color-accent)' : 'var(--color-bg-tertiary)',
+                }}
+                title="Wake word"
+              >
+                <span
+                  className="absolute top-0.5 left-0.5 w-5 h-5 rounded-full transition-transform bg-white"
+                  style={{
+                    transform: settings.wakeWordEnabled ? 'translateX(20px)' : 'translateX(0)',
+                    boxShadow: '0 1px 3px rgba(0,0,0,0.2)',
+                  }}
+                />
+              </button>
+            </SettingRow>
+            {settings.wakeWordEnabled && (
+              <>
+                <SettingRow label="Wake phrase" description="Default: Jarvis">
+                  <input
+                    type="text"
+                    value={settings.wakeWord}
+                    onChange={(e) => { updateSettings({ wakeWord: e.target.value || 'jarvis' }); showSaved(); }}
+                    className="text-sm px-3 py-1.5 rounded-lg outline-none w-36"
+                    style={{
+                      background: 'var(--color-bg-secondary)',
+                      color: 'var(--color-text)',
+                      border: '1px solid var(--color-border)',
+                    }}
+                    placeholder="jarvis"
+                  />
+                </SettingRow>
+                <SettingRow label="Wake capture" description={`${settings.wakeCaptureSeconds}s after wake word`}>
+                  <input
+                    type="range"
+                    min="5"
+                    max="30"
+                    step="1"
+                    value={settings.wakeCaptureSeconds}
+                    onChange={(e) => { updateSettings({ wakeCaptureSeconds: parseInt(e.target.value, 10) }); showSaved(); }}
+                    className="w-32 cursor-pointer accent-[var(--color-accent)]"
+                  />
+                </SettingRow>
+              </>
+            )}
+            <SettingRow label="Text-to-Speech" description="Speak assistant answers through the local browser voice">
+              <button
+                onClick={() => { updateSettings({ ttsEnabled: !settings.ttsEnabled }); showSaved(); }}
+                className="relative w-11 h-6 rounded-full transition-colors cursor-pointer"
+                style={{
+                  background: settings.ttsEnabled ? 'var(--color-accent)' : 'var(--color-bg-tertiary)',
+                }}
+                title="Text-to-Speech"
+              >
+                <span
+                  className="absolute top-0.5 left-0.5 w-5 h-5 rounded-full transition-transform bg-white"
+                  style={{
+                    transform: settings.ttsEnabled ? 'translateX(20px)' : 'translateX(0)',
+                    boxShadow: '0 1px 3px rgba(0,0,0,0.2)',
+                  }}
+                />
+              </button>
+            </SettingRow>
+            <SettingRow label="Jarvis-style voice" description="Uses the closest installed Windows/WebView voice, not the movie voice">
+              <div className="flex flex-wrap gap-2 justify-end">
+                <select
+                  value={settings.ttsVoiceName}
+                  onChange={(e) => { updateSettings({ ttsVoiceName: e.target.value }); showSaved(); }}
+                  className="text-sm px-3 py-1.5 rounded-lg outline-none max-w-56"
+                  style={{
+                    background: 'var(--color-bg-secondary)',
+                    color: 'var(--color-text)',
+                    border: '1px solid var(--color-border)',
+                  }}
+                >
+                  <option value="">System default</option>
+                  {ttsVoices.map((voice) => (
+                    <option key={voice.name} value={voice.name}>
+                      {voice.name}{voice.culture ? ` (${voice.culture})` : ''}
+                    </option>
+                  ))}
+                </select>
+                <button
+                  onClick={chooseJarvisVoice}
+                  className="px-3 py-1.5 rounded-lg text-xs font-medium transition-colors cursor-pointer"
+                  style={{ background: 'var(--color-bg-secondary)', color: 'var(--color-text-secondary)', border: '1px solid var(--color-border)' }}
+                >
+                  Jarvis preset
+                </button>
+                <button
+                  onClick={testVoice}
+                  className="px-3 py-1.5 rounded-lg text-xs font-medium transition-colors cursor-pointer"
+                  style={{ background: 'var(--color-bg-secondary)', color: 'var(--color-text-secondary)', border: '1px solid var(--color-border)' }}
+                >
+                  Test voice
+                </button>
+              </div>
+            </SettingRow>
+            <SettingRow label="Voice speed" description={`${settings.ttsRate}`}>
+              <input
+                type="range"
+                min="-5"
+                max="3"
+                step="1"
+                value={settings.ttsRate}
+                onChange={(e) => { updateSettings({ ttsRate: parseInt(e.target.value, 10) }); showSaved(); }}
+                className="w-32 cursor-pointer accent-[var(--color-accent)]"
+              />
+            </SettingRow>
+            <SettingRow label="Voice volume" description={`${settings.ttsVolume}%`}>
+              <input
+                type="range"
+                min="0"
+                max="100"
+                step="5"
+                value={settings.ttsVolume}
+                onChange={(e) => { updateSettings({ ttsVolume: parseInt(e.target.value, 10) }); showSaved(); }}
+                className="w-32 cursor-pointer accent-[var(--color-accent)]"
+              />
+            </SettingRow>
+            <SettingRow label="Auto-send voice" description="Send recognized speech directly to Jarvis after recording stops">
+              <button
+                onClick={() => { updateSettings({ voiceAutoSend: !settings.voiceAutoSend }); showSaved(); }}
+                className="relative w-11 h-6 rounded-full transition-colors cursor-pointer"
+                style={{
+                  background: settings.voiceAutoSend ? 'var(--color-accent)' : 'var(--color-bg-tertiary)',
+                }}
+                title="Auto-send recognized voice"
+              >
+                <span
+                  className="absolute top-0.5 left-0.5 w-5 h-5 rounded-full transition-transform bg-white"
+                  style={{
+                    transform: settings.voiceAutoSend ? 'translateX(20px)' : 'translateX(0)',
+                    boxShadow: '0 1px 3px rgba(0,0,0,0.2)',
+                  }}
+                />
+              </button>
+            </SettingRow>
+            <SettingRow label="Voice status" description="Browser fallback works without Whisper installation">
               <div className="flex items-center gap-2">
                 <span
                   className="w-2 h-2 rounded-full"
                   style={{
-                    background: speechBackendAvailable === true ? 'var(--color-success)'
+                    background: speechBackendAvailable === true || browserSpeechAvailable ? 'var(--color-success)'
                       : speechBackendAvailable === false ? 'var(--color-text-tertiary)'
                       : 'var(--color-text-tertiary)',
                   }}
                 />
                 <span className="text-xs" style={{ color: 'var(--color-text-secondary)' }}>
                   {speechBackendAvailable === null ? 'Checking...'
-                    : speechBackendAvailable ? 'Available'
-                    : 'Not configured'}
+                    : speechBackendAvailable ? 'Backend available'
+                    : browserSpeechAvailable ? 'Browser voice available'
+                    : 'Not available'}
                 </span>
               </div>
             </SettingRow>
-            {!speechBackendAvailable && speechBackendAvailable !== null && (
+            <SettingRow label="Voice shortcut" description="Start or stop voice input globally from Windows">
+              <kbd
+                className="font-mono text-xs px-2 py-1 rounded"
+                style={{
+                  background: 'var(--color-bg-secondary)',
+                  color: 'var(--color-text-secondary)',
+                  border: '1px solid var(--color-border)',
+                }}
+              >
+                Ctrl + Alt + J
+              </kbd>
+            </SettingRow>
+            {!speechBackendAvailable && !browserSpeechAvailable && speechBackendAvailable !== null && (
               <div className="text-xs mt-2 px-1" style={{ color: 'var(--color-text-tertiary)' }}>
                 Set up a speech backend to use voice input.
                 See the <a href="https://open-jarvis.github.io/OpenJarvis/user-guide/tools/" target="_blank" rel="noopener noreferrer" style={{ color: 'var(--color-accent)' }}>documentation</a> for details.
+              </div>
+            )}
+            {settings.ttsEnabled && (
+              <div className="flex items-center gap-1 text-xs mt-2 px-1" style={{ color: 'var(--color-text-tertiary)' }}>
+                <Volume2 size={12} /> Voice output uses the installed Windows/WebView voices.
               </div>
             )}
           </Section>
 
           {/* Data */}
           <Section title="Data">
+            <SettingRow label="Diagnostics" description="Open local project files and logs for troubleshooting">
+              <div className="flex flex-wrap gap-2 justify-end">
+                <LocalOpenButton target="repo">Repo</LocalOpenButton>
+                <LocalOpenButton target="config">Config</LocalOpenButton>
+                <LocalOpenButton target="backend_log">Backend log</LocalOpenButton>
+                <LocalOpenButton target="backend_error_log">Error log</LocalOpenButton>
+                <LocalOpenButton target="watchdog_log">Watchdog</LocalOpenButton>
+                <LocalOpenButton target="startup">Autostart</LocalOpenButton>
+              </div>
+            </SettingRow>
+            <SettingRow label="Jarvis Brain" description="Open the Obsidian memory files used by OpenJarvis">
+              <div className="flex flex-wrap gap-2 justify-end">
+                <MemoryOpenButton target="vault">Vault</MemoryOpenButton>
+                <MemoryOpenButton target="inbox">Inbox</MemoryOpenButton>
+                <MemoryOpenButton target="long_term">Long-Term</MemoryOpenButton>
+                <MemoryOpenButton target="profile">Profile</MemoryOpenButton>
+              </div>
+            </SettingRow>
+            <SettingRow
+              label="Brain sync"
+              description={
+                memorySyncError ||
+                (memoryStatus
+                  ? memoryStatus.needs_sync
+                    ? 'Markdown changed after the memory DB'
+                    : `DB indexed: ${formatMemoryTime(memoryStatus.db_modified)}`
+                  : 'Desktop memory status unavailable')
+              }
+            >
+              <button
+                onClick={handleMemorySync}
+                disabled={memorySyncing}
+                className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition-colors cursor-pointer disabled:opacity-60 disabled:cursor-default"
+                style={{
+                  background: memoryStatus?.needs_sync ? 'var(--color-accent)' : 'var(--color-bg-secondary)',
+                  color: memoryStatus?.needs_sync ? 'white' : 'var(--color-text-secondary)',
+                  border: memoryStatus?.needs_sync ? '1px solid var(--color-accent)' : '1px solid var(--color-border)',
+                }}
+              >
+                <RefreshCw size={12} className={memorySyncing ? 'animate-spin' : ''} />
+                {memorySyncing ? 'Syncing...' : memoryStatus?.needs_sync ? 'Sync now' : 'Re-sync'}
+              </button>
+            </SettingRow>
+            <SettingRow label="Brain search" description={memorySearchError || 'Search the indexed Obsidian memory DB'}>
+              <div className="flex gap-2">
+                <input
+                  type="text"
+                  value={memoryQuery}
+                  onChange={(e) => setMemoryQuery(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter') handleMemorySearch();
+                  }}
+                  placeholder="Search memory..."
+                  className="text-sm px-3 py-1.5 rounded-lg outline-none w-48"
+                  style={{
+                    background: 'var(--color-bg-secondary)',
+                    color: 'var(--color-text)',
+                    border: '1px solid var(--color-border)',
+                  }}
+                />
+                <button
+                  onClick={handleMemorySearch}
+                  disabled={memorySearching || !memoryQuery.trim()}
+                  className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition-colors cursor-pointer disabled:opacity-60 disabled:cursor-default"
+                  style={{
+                    background: 'var(--color-bg-secondary)',
+                    color: 'var(--color-text-secondary)',
+                    border: '1px solid var(--color-border)',
+                  }}
+                >
+                  <Search size={12} /> {memorySearching ? 'Searching...' : 'Search'}
+                </button>
+              </div>
+            </SettingRow>
+            {memorySearchResults.length > 0 && (
+              <div className="grid gap-2 px-1 -mt-1 mb-1">
+                {memorySearchResults.map((result, index) => (
+                  <div
+                    key={`${result.source || 'memory'}-${index}`}
+                    className="rounded-lg px-3 py-2 text-xs"
+                    style={{ background: 'var(--color-bg-secondary)', border: '1px solid var(--color-border-subtle)' }}
+                  >
+                    <div className="mb-1" style={{ color: 'var(--color-text-tertiary)' }}>
+                      {result.source || 'Memory'} · score {Number(result.score || 0).toFixed(2)}
+                    </div>
+                    <div className="line-clamp-4 whitespace-pre-wrap" style={{ color: 'var(--color-text-secondary)' }}>
+                      {result.content}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+            {memoryStatus && (
+              <div className="text-[11px] px-1 -mt-1 mb-1 leading-relaxed" style={{ color: 'var(--color-text-tertiary)' }}>
+                Inbox: {formatMemoryTime(memoryStatus.inbox_modified)} · Long-Term: {formatMemoryTime(memoryStatus.long_term_modified)}
+              </div>
+            )}
             <SettingRow label="Conversations" description={`${conversations.length} stored locally`}>
               <div className="flex gap-2">
                 <button

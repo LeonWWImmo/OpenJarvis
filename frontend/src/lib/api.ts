@@ -31,7 +31,7 @@ export async function initApiBase(): Promise<void> {
   }
 }
 
-const DESKTOP_API_FALLBACK = 'http://localhost:8000';
+const DESKTOP_API_FALLBACK = 'http://127.0.0.1:8000';
 
 const isLocalDevBrowser = (): boolean => {
   if (typeof window === 'undefined') return false;
@@ -187,7 +187,7 @@ export async function preloadModel(modelName: string): Promise<void> {
     return;
   }
   // Trigger Ollama to load the model into memory (empty prompt, no generation).
-  const ollamaUrl = 'http://127.0.0.1:11434';
+  const ollamaUrl = 'http://127.0.0.1:11436';
   try {
     const res = await fetch(`${ollamaUrl}/api/generate`, {
       method: 'POST',
@@ -314,6 +314,213 @@ export async function fetchSpeechHealth(): Promise<SpeechHealth> {
   const res = await fetch(`${getBase()}/v1/speech/health`);
   if (!res.ok) return { available: false };
   return res.json();
+}
+
+export interface TtsVoice {
+  name: string;
+  culture?: string;
+  gender?: string;
+  age?: string;
+}
+
+export async function listTtsVoices(): Promise<TtsVoice[]> {
+  if (!isTauri()) {
+    if (!('speechSynthesis' in window)) return [];
+    return window.speechSynthesis.getVoices().map((voice) => ({
+      name: voice.name,
+      culture: voice.lang,
+    }));
+  }
+  try {
+    const voices = await tauriInvoke<TtsVoice[]>('list_tts_voices');
+    return Array.isArray(voices) ? voices : [];
+  } catch {
+    return [];
+  }
+}
+
+export async function speakText(text: string, options: { voiceName?: string; rate?: number; volume?: number } = {}): Promise<boolean> {
+  if (!isTauri()) return false;
+  try {
+    await tauriInvoke<void>('stop_tts').catch(() => {});
+    await tauriInvoke<void>('speak_text', {
+      text,
+      voiceName: options.voiceName || '',
+      rate: options.rate ?? 0,
+      volume: options.volume ?? 100,
+    });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+export async function stopTts(): Promise<void> {
+  if (!isTauri()) {
+    if ('speechSynthesis' in window) window.speechSynthesis.cancel();
+    return;
+  }
+  await tauriInvoke<void>('stop_tts').catch(() => {});
+}
+
+export async function playVoiceCue(kind: 'start' | 'stop' | 'error'): Promise<void> {
+  if (!isTauri()) return;
+  try {
+    await tauriInvoke<void>('play_voice_cue', { kind });
+  } catch {}
+}
+
+export async function playWakeAck(): Promise<boolean> {
+  if (!isTauri()) return false;
+  try {
+    await tauriInvoke<void>('play_wake_ack');
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+const VOICE_SERVICE_BASE = 'http://127.0.0.1:8765';
+
+export interface NativeWakeHealth {
+  available: boolean;
+  listening: boolean;
+  model_loaded: boolean;
+  model: string;
+  threshold: number;
+  last_score: number;
+  events: number;
+  error: string | null;
+}
+
+export interface NativeWakeEvent {
+  id: number;
+  timestamp: number;
+  model: string;
+  score: number;
+}
+
+export async function fetchNativeWakeHealth(): Promise<NativeWakeHealth | null> {
+  try {
+    const res = await fetch(`${VOICE_SERVICE_BASE}/health`, {
+      signal: AbortSignal.timeout(1500),
+    });
+    if (!res.ok) return null;
+    return res.json();
+  } catch {
+    return null;
+  }
+}
+
+export async function fetchNativeWakeEvents(after = 0): Promise<NativeWakeEvent[]> {
+  try {
+    const res = await fetch(`${VOICE_SERVICE_BASE}/events?after=${after}`, {
+      signal: AbortSignal.timeout(1500),
+    });
+    if (!res.ok) return [];
+    const data = await res.json();
+    return Array.isArray(data.events) ? data.events : [];
+  } catch {
+    return [];
+  }
+}
+
+export async function rememberText(text: string): Promise<void> {
+  const clean = text.trim();
+  if (!clean) throw new Error('Nothing to remember');
+
+  if (isTauri()) {
+    await tauriInvoke<void>('remember_text', { text: clean });
+    return;
+  }
+
+  const res = await fetch(`${getBase()}/v1/memory/store`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ text: clean }),
+  });
+  if (!res.ok) throw new Error(`Memory store failed: ${res.status}`);
+}
+
+export async function promoteMemoryText(text: string): Promise<void> {
+  const clean = text.trim();
+  if (!clean) throw new Error('Nothing to promote');
+
+  if (isTauri()) {
+    await tauriInvoke<void>('promote_memory_text', { text: clean });
+    return;
+  }
+
+  const res = await fetch(`${getBase()}/v1/memory/store`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ text: clean }),
+  });
+  if (!res.ok) throw new Error(`Memory promote failed: ${res.status}`);
+}
+
+export async function openMemoryTarget(target: 'vault' | 'inbox' | 'long_term' | 'profile'): Promise<void> {
+  if (!isTauri()) return;
+  await tauriInvoke<void>('open_memory_target', { target });
+}
+
+export type LocalTarget = 'repo' | 'config' | 'backend_log' | 'backend_error_log' | 'watchdog_log' | 'startup';
+
+export async function openLocalTarget(target: LocalTarget): Promise<void> {
+  if (!isTauri()) return;
+  await tauriInvoke<void>('open_local_target', { target });
+}
+
+export interface MemoryStatus {
+  vault_path: string;
+  inbox_path: string;
+  long_term_path: string;
+  profile_path: string;
+  db_path: string;
+  inbox_modified: number | null;
+  long_term_modified: number | null;
+  profile_modified: number | null;
+  db_modified: number | null;
+  needs_sync: boolean;
+}
+
+export async function getMemoryStatus(): Promise<MemoryStatus | null> {
+  if (!isTauri()) return null;
+  return tauriInvoke<MemoryStatus>('get_memory_status');
+}
+
+export async function syncMemoryBrain(): Promise<void> {
+  if (!isTauri()) return;
+  await tauriInvoke<void>('sync_memory_brain');
+}
+
+export interface MemorySearchResult {
+  content: string;
+  score: number;
+  source?: string;
+  metadata?: Record<string, unknown>;
+}
+
+export async function searchMemory(query: string, topK = 5): Promise<MemorySearchResult[]> {
+  const clean = query.trim();
+  if (!clean) return [];
+
+  if (isTauri()) {
+    const result = await tauriInvoke<{ results?: MemorySearchResult[] }>('search_memory', {
+      query: clean,
+      topK,
+    });
+    return result.results || [];
+  }
+
+  const res = await fetch(`${getBase()}/v1/memory/search`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ query: clean, top_k: topK }),
+  });
+  if (!res.ok) throw new Error(`Memory search failed: ${res.status}`);
+  const data = await res.json();
+  return data.results || [];
 }
 
 // ---------------------------------------------------------------------------

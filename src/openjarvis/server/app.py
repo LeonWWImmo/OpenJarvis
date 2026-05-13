@@ -155,6 +155,7 @@ def create_app(
     api_key: str = "",
     webhook_config: dict | None = None,
     cors_origins: list[str] | None = None,
+    tool_executor=None,
 ) -> FastAPI:
     """Create and configure the FastAPI application.
 
@@ -240,6 +241,7 @@ def create_app(
     app.state.speech_backend = speech_backend
     app.state.agent_manager = agent_manager
     app.state.agent_scheduler = agent_scheduler
+    app.state.tool_executor = tool_executor
     app.state.session_start = time.time()
 
     # Wire up trace store if traces are enabled

@@ -799,7 +799,7 @@ class ToolsConfig:
     storage: StorageConfig = field(default_factory=StorageConfig)
     mcp: MCPConfig = field(default_factory=MCPConfig)
     browser: BrowserConfig = field(default_factory=BrowserConfig)
-    enabled: str = ""  # comma-separated default tools
+    enabled: list[str] = field(default_factory=list)  # default tools list
 
 
 @dataclass
@@ -1486,9 +1486,10 @@ def _apply_toml_section(target: Any, section: Dict[str, Any]) -> None:
                     is_str_field = False
                     if hasattr(target, "__dataclass_fields__"):
                         field_obj = target.__dataclass_fields__.get(key)
-                        if field_obj is not None and field_obj.type in ("str", str):
-                            is_str_field = True
-                        elif field_obj is None:
+                        if field_obj is not None:
+                            if field_obj.type in ("str", str):
+                                is_str_field = True
+                        else:
                             # Property, not a real field — normalise to string
                             is_str_field = True
                     if is_str_field:

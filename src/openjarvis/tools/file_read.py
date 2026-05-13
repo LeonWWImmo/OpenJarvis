@@ -118,6 +118,12 @@ class FileReadTool(BaseTool):
                 text = path.read_text(encoding="utf-8")
             except UnicodeDecodeError:
                 text = path.read_text(encoding="utf-8", errors="replace")
+            except Exception as exc:
+                return ToolResult(
+                    tool_name="file_read",
+                    content=f"Read error: {exc}",
+                    success=False,
+                )
         except Exception as exc:
             return ToolResult(
                 tool_name="file_read",

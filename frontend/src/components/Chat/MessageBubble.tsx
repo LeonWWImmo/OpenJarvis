@@ -5,10 +5,12 @@ import rehypeKatex from 'rehype-katex';
 import remarkGfm from 'remark-gfm';
 import remarkMath from 'remark-math';
 import 'katex/dist/katex.min.css';
-import { Copy, Check } from 'lucide-react';
+import { Brain, Copy, Check } from 'lucide-react';
 import { AudioPlayer } from './AudioPlayer';
 import { ToolCallCard } from './ToolCallCard';
 import { XRayFooter } from './XRayFooter';
+import { promoteMemoryText, rememberText } from '../../lib/api';
+import { useAppStore } from '../../lib/store';
 import type { ChatMessage } from '../../types';
 
 function stripThinkTags(text: string): string {
@@ -97,12 +99,102 @@ function CopyMessageButton({ content }: { content: string }) {
   );
 }
 
+function RememberMessageButton({ content }: { content: string }) {
+  const [saved, setSaved] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const addLogEntry = useAppStore((s) => s.addLogEntry);
+
+  const handleRemember = async () => {
+    const clean = content.trim();
+    if (!clean || saving) return;
+    setSaving(true);
+    try {
+      await rememberText(clean.slice(0, 1200));
+      setSaved(true);
+      addLogEntry({
+        timestamp: Date.now(),
+        level: 'info',
+        category: 'tool',
+        message: 'Saved message to Obsidian inbox',
+      });
+      setTimeout(() => setSaved(false), 2000);
+    } catch (error) {
+      addLogEntry({
+        timestamp: Date.now(),
+        level: 'error',
+        category: 'tool',
+        message: error instanceof Error ? error.message : 'Failed to save memory',
+      });
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <button
+      onClick={handleRemember}
+      disabled={saving || !content.trim()}
+      className="flex items-center gap-1 px-1.5 py-1 rounded opacity-0 group-hover:opacity-100 transition-opacity cursor-pointer disabled:cursor-default disabled:opacity-30"
+      style={{ color: saved ? 'var(--color-success)' : 'var(--color-text-tertiary)' }}
+      title="Save to Jarvis memory inbox"
+    >
+      {saved ? <Check size={14} /> : <Brain size={14} />}
+      <span className="text-[11px]">{saved ? 'Saved' : 'Remember'}</span>
+    </button>
+  );
+}
+
+function PromoteMemoryButton({ content }: { content: string }) {
+  const [saved, setSaved] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const addLogEntry = useAppStore((s) => s.addLogEntry);
+
+  const handlePromote = async () => {
+    const clean = content.trim();
+    if (!clean || saving) return;
+    setSaving(true);
+    try {
+      await promoteMemoryText(clean.slice(0, 1200));
+      setSaved(true);
+      addLogEntry({
+        timestamp: Date.now(),
+        level: 'info',
+        category: 'tool',
+        message: 'Promoted message to long-term memory',
+      });
+      setTimeout(() => setSaved(false), 2500);
+    } catch (error) {
+      addLogEntry({
+        timestamp: Date.now(),
+        level: 'error',
+        category: 'tool',
+        message: error instanceof Error ? error.message : 'Failed to promote memory',
+      });
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <button
+      onClick={handlePromote}
+      disabled={saving || !content.trim()}
+      className="flex items-center gap-1 px-1.5 py-1 rounded opacity-0 group-hover:opacity-100 transition-opacity cursor-pointer disabled:cursor-default disabled:opacity-30"
+      style={{ color: saved ? 'var(--color-success)' : 'var(--color-text-tertiary)' }}
+      title="Save directly to long-term memory"
+    >
+      {saved ? <Check size={14} /> : <Brain size={14} />}
+      <span className="text-[11px]">{saved ? 'Promoted' : 'Promote'}</span>
+    </button>
+  );
+}
+
 export function MessageBubble({ message }: Props) {
   const isUser = message.role === 'user';
 
   if (isUser) {
     return (
-      <div className="flex justify-end mb-4">
+      <div className="group flex flex-col items-end mb-4">
         <div
           className="max-w-[85%] px-4 py-2.5 text-sm leading-relaxed"
           style={{
@@ -114,6 +206,11 @@ export function MessageBubble({ message }: Props) {
           }}
         >
           {message.content}
+        </div>
+        <div className="flex items-center gap-2 mt-1">
+          <RememberMessageButton content={message.content} />
+          <PromoteMemoryButton content={message.content} />
+          <CopyMessageButton content={message.content} />
         </div>
       </div>
     );
@@ -152,6 +249,8 @@ export function MessageBubble({ message }: Props) {
 
       {/* Footer: copy + x-ray */}
       <div className="flex items-center gap-2 mt-1.5">
+        <RememberMessageButton content={cleanContent} />
+        <PromoteMemoryButton content={cleanContent} />
         <CopyMessageButton content={cleanContent} />
       </div>
       <XRayFooter usage={message.usage} telemetry={message.telemetry} />

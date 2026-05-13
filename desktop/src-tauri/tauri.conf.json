@@ -4,7 +4,7 @@
   "version": "0.1.0",
   "identifier": "com.openjarvis.desktop",
   "build": {
-    "frontendDist": "../../frontend/dist",
+    "frontendDist": "../../src/openjarvis/server/static",
     "devUrl": "http://localhost:5173",
     "beforeDevCommand": "npm run dev",
     "beforeBuildCommand": "npm run build"

@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { Outlet, useNavigate } from 'react-router';
 import { Sidebar } from './Sidebar/Sidebar';
 import { SystemPulse } from './SystemPulse';
+import { JarvisWebGLOrb } from './Chat/JarvisWebGLOrb';
 import { useAppStore } from '../lib/store';
 import { checkHealth } from '../lib/api';
 
@@ -60,8 +61,13 @@ export function Layout() {
             onClick={() => useAppStore.getState().setSidebarOpen(false)}
           />
         )}
-        <main className="flex-1 flex flex-col min-w-0 h-full" style={{ background: 'var(--color-bg)' }}>
-          <Outlet />
+        <main className="relative flex-1 flex flex-col min-w-0 h-full overflow-hidden" style={{ background: 'var(--color-bg)' }}>
+          <div className="jarvis-layout-core" aria-hidden="true">
+            <JarvisWebGLOrb />
+          </div>
+          <div className="relative z-10 flex flex-col min-h-0 h-full">
+            <Outlet />
+          </div>
         </main>
       </div>
     </div>

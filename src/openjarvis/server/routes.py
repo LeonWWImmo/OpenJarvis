@@ -8,6 +8,7 @@ from typing import Any
 
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import StreamingResponse
+from starlette.concurrency import run_in_threadpool
 
 from openjarvis.core.types import Message, Role
 from openjarvis.server.models import (
@@ -43,15 +44,81 @@ def _to_messages(chat_messages) -> list[Message]:
     return messages
 
 
+def _is_synthetic_error_message(message) -> bool:
+    """Drop UI transport errors before they become model prompt context."""
+    if getattr(message, "role", "") != "assistant":
+        return False
+    text = (getattr(message, "content", "") or "").strip()
+    return (
+        text.startswith("Error: HTTP ")
+        or text.startswith("Error: Connection failed")
+        or text.startswith("Error: Chat request failed")
+        or text.startswith("No response was generated")
+    )
+
+
+def _sanitize_chat_messages(request_body: ChatCompletionRequest) -> None:
+    messages = [
+        msg for msg in request_body.messages if not _is_synthetic_error_message(msg)
+    ]
+    # Local desktop mode should not replay long stale conversations into small
+    # Ollama models. The active user turn remains last, so keep the recent tail.
+    request_body.messages = messages[-8:]
+    if request_body.model.startswith(("qwen3:0.6b", "qwen3.5:0.8b")):
+        request_body.max_tokens = min(request_body.max_tokens, 1024)
+
+
+def _get_jarvis_system_prompt(config: Any | None = None) -> str:
+    """Return the local desktop Jarvis persona prompt."""
+    configured = ""
+    if config is not None:
+        agent_cfg = getattr(config, "agent", None)
+        configured = (getattr(agent_cfg, "system_prompt", "") or "").strip()
+        prompt_path = (getattr(agent_cfg, "system_prompt_path", "") or "").strip()
+        if not configured and prompt_path:
+            try:
+                from pathlib import Path
+
+                configured = Path(prompt_path).expanduser().read_text(encoding="utf-8").strip()
+            except Exception:
+                configured = ""
+
+    if configured:
+        return configured
+
+    return (
+        "You are Jarvis, a concise local assistant. "
+        "Answer directly, stay technically precise, and say when context is uncertain. "
+        "Use provided memory context only when it is relevant. "
+        "Do not store new facts unless the caller explicitly requests it."
+    )
+
+
+def _ensure_system_prompt(request_body: ChatCompletionRequest, config: Any | None = None) -> None:
+    """Prepend the Jarvis system prompt unless the caller already supplied one."""
+    if any(msg.role == "system" for msg in request_body.messages):
+        return
+
+    from openjarvis.server.models import ChatMessage
+
+    request_body.messages = [
+        ChatMessage(role="system", content=_get_jarvis_system_prompt(config)),
+        *request_body.messages,
+    ]
+
+
 @router.post("/v1/chat/completions")
 async def chat_completions(request_body: ChatCompletionRequest, request: Request):
     """Handle chat completion requests (streaming and non-streaming)."""
+    _sanitize_chat_messages(request_body)
+
     engine = request.app.state.engine
     agent = getattr(request.app.state, "agent", None)
     model = request_body.model
 
     # Inject memory context into messages before dispatching
     config = getattr(request.app.state, "config", None)
+    _ensure_system_prompt(request_body, config)
     memory_backend = getattr(request.app.state, "memory_backend", None)
     if (
         config is not None
@@ -149,15 +216,60 @@ async def chat_completions(request_body: ChatCompletionRequest, request: Request
 
     # Non-streaming: use agent if available, otherwise direct engine call
     if agent is not None:
-        return _handle_agent(agent, model, request_body, complexity_info)
+        return await run_in_threadpool(
+            _handle_agent,
+            agent,
+            model,
+            request_body,
+            complexity_info,
+        )
 
     bus = getattr(request.app.state, "bus", None)
-    return _handle_direct(
+    tool_executor = getattr(request.app.state, "tool_executor", None)
+    return await run_in_threadpool(
+        _handle_direct,
         engine,
         model,
         request_body,
-        bus=bus,
-        complexity_info=complexity_info,
+        bus,
+        complexity_info,
+        tool_executor,
+    )
+
+
+def _generate_once(
+    engine, messages, model, temperature, max_tokens, tools=None, bus=None
+):
+    """Single generate call, optionally with tools and instrumentation."""
+    kwargs = {}
+    if tools:
+        kwargs["tools"] = tools
+    if bus:
+        from openjarvis.telemetry.wrapper import instrumented_generate
+        return instrumented_generate(
+            engine, messages, model=model, bus=bus,
+            temperature=temperature, max_tokens=max_tokens, **kwargs,
+        )
+    return engine.generate(
+        messages, model=model, temperature=temperature, max_tokens=max_tokens, **kwargs,
+    )
+
+
+def _build_response(
+    content, model, usage, complexity_info=None, finish_reason="stop",
+) -> ChatCompletionResponse:
+    return ChatCompletionResponse(
+        model=model,
+        choices=[Choice(
+            message=ChoiceMessage(role="assistant", content=content),
+            finish_reason=finish_reason,
+        )],
+        usage=UsageInfo(
+            prompt_tokens=usage.get("prompt_tokens", 0),
+            completion_tokens=usage.get("completion_tokens", 0),
+            total_tokens=usage.get("total_tokens", 0),
+        ),
+        complexity=complexity_info,
     )
 
 
@@ -167,65 +279,66 @@ def _handle_direct(
     req: ChatCompletionRequest,
     bus=None,
     complexity_info=None,
+    tool_executor=None,
 ) -> ChatCompletionResponse:
-    """Direct engine call without agent."""
+    """Direct engine call — with tool execution loop when tool_executor is set."""
     messages = _to_messages(req.messages)
-    kwargs: dict[str, Any] = {}
-    if req.tools:
-        kwargs["tools"] = req.tools
-    if bus:
-        from openjarvis.telemetry.wrapper import instrumented_generate
+    openai_tools = None
+    if tool_executor:
+        openai_tools = tool_executor.get_openai_tools()
+        # Inject tool descriptions into system prompt so the model knows it can call tools
+        try:
+            from openjarvis.tools._stubs import build_tool_descriptions
+            tool_desc = build_tool_descriptions(list(tool_executor._tools.values()))
+            sys_text = "\n\nDu hast Zugriff auf folgende Werkzeuge. Rufe sie bei Bedarf ueber function calling auf:\n" + tool_desc
+            if messages and messages[0].role == Role.SYSTEM:
+                messages[0] = Message(role=Role.SYSTEM, content=messages[0].content + sys_text)
+            else:
+                messages.insert(0, Message(role=Role.SYSTEM, content=sys_text))
+        except Exception:
+            import logging
+            logging.getLogger("openjarvis.server").debug("Tool prompt injection failed", exc_info=True)
 
-        result = instrumented_generate(
-            engine,
-            messages,
-            model=model,
-            bus=bus,
-            temperature=req.temperature,
-            max_tokens=req.max_tokens,
-            **kwargs,
-        )
-    else:
-        result = engine.generate(
-            messages,
-            model=model,
-            temperature=req.temperature,
-            max_tokens=req.max_tokens,
-            **kwargs,
-        )
-    content = result.get("content", "")
-    usage = result.get("usage", {})
+    total_usage = {}
+    max_turns = 10
 
-    choice_msg = ChoiceMessage(role="assistant", content=content)
-    # Include tool calls if present
-    tool_calls = result.get("tool_calls")
-    if tool_calls:
-        choice_msg.tool_calls = [
-            {
-                "id": tc.get("id", ""),
-                "type": "function",
-                "function": {
-                    "name": tc.get("name", ""),
-                    "arguments": tc.get("arguments", "{}"),
-                },
-            }
+    for turn in range(max_turns):
+        result = _generate_once(
+            engine, messages, model, req.temperature, req.max_tokens,
+            tools=openai_tools, bus=bus,
+        )
+
+        content = result.get("content", "")
+        usage = result.get("usage", {})
+        for k in ("prompt_tokens", "completion_tokens", "total_tokens"):
+            total_usage[k] = total_usage.get(k, 0) + usage.get(k, 0)
+
+        tool_calls = result.get("tool_calls")
+        if not tool_calls:
+            return _build_response(content, model, total_usage, complexity_info)
+
+        # Append assistant message with tool calls
+        from openjarvis.core.types import ToolCall
+
+        messages.append(Message(role=Role.ASSISTANT, content=content, tool_calls=[
+            ToolCall(id=tc["id"], name=tc["name"], arguments=tc["arguments"])
             for tc in tool_calls
-        ]
+        ]))
 
-    return ChatCompletionResponse(
-        model=model,
-        choices=[
-            Choice(
-                message=choice_msg,
-                finish_reason=result.get("finish_reason", "stop"),
-            )
-        ],
-        usage=UsageInfo(
-            prompt_tokens=usage.get("prompt_tokens", 0),
-            completion_tokens=usage.get("completion_tokens", 0),
-            total_tokens=usage.get("total_tokens", 0),
-        ),
-        complexity=complexity_info,
+        # Execute each tool call
+        for tc in tool_calls:
+            tool_call = ToolCall(id=tc["id"], name=tc["name"], arguments=tc["arguments"])
+            tool_result = tool_executor.execute(tool_call)
+            messages.append(Message(
+                role=Role.TOOL,
+                content=tool_result.content,
+                tool_call_id=tc["id"],
+            ))
+
+    return _build_response(
+        "Maximum tool execution turns reached.",
+        model, total_usage, complexity_info,
+        finish_reason="length",
     )
 
 
@@ -459,6 +572,28 @@ async def list_models(request: Request) -> ModelListResponse:
     if not model_ids:
         model_ids = await list_local_models()
 
+    preferred = getattr(request.app.state, "model", "") or ""
+    configured = ""
+    cfg = getattr(request.app.state, "config", None)
+    if cfg is not None:
+        configured = (
+            getattr(cfg.server, "model", "") or getattr(cfg.intelligence, "default_model", "")
+        )
+
+    rank_order = [
+        configured,
+        preferred,
+        "qwen3.5:4b",
+        "qwen3.5:2b",
+        "qwen3.5:0.8b",
+        "qwen3:0.6b",
+    ]
+    rank_map = {model_id: idx for idx, model_id in enumerate([m for m in rank_order if m])}
+    model_ids = sorted(
+        model_ids,
+        key=lambda mid: (rank_map.get(mid, 10_000), mid),
+    )
+
     return ModelListResponse(
         data=[ModelObject(id=mid) for mid in model_ids],
     )
@@ -483,7 +618,7 @@ async def pull_model(request: Request):
 
     import httpx as _httpx
 
-    host = getattr(engine, "_host", "http://localhost:11434")
+    host = getattr(engine, "_host", "http://127.0.0.1:11434")
     client = _httpx.Client(base_url=host, timeout=600.0)
     try:
         resp = client.post(
@@ -514,7 +649,7 @@ async def delete_model(model_name: str, request: Request):
 
     import httpx as _httpx
 
-    host = getattr(engine, "_host", "http://localhost:11434")
+    host = getattr(engine, "_host", "http://127.0.0.1:11434")
     client = _httpx.Client(base_url=host, timeout=30.0)
     try:
         resp = client.request(
@@ -687,7 +822,7 @@ async def server_info(request: Request):
 async def health(request: Request):
     """Health check endpoint."""
     engine = request.app.state.engine
-    healthy = engine.health()
+    healthy = await run_in_threadpool(engine.health)
     if not healthy:
         raise HTTPException(status_code=503, detail="Engine unhealthy")
     return {"status": "ok"}

@@ -2,15 +2,16 @@ use std::sync::Arc;
 use std::time::Duration;
 use tauri::menu::{MenuBuilder, MenuItemBuilder};
 use tauri::tray::TrayIconBuilder;
-use tauri::Manager;
+use tauri::{Emitter, Manager};
+use tauri_plugin_global_shortcut::{Code, Modifiers, Shortcut, ShortcutState};
 use tauri_plugin_autostart::MacosLauncher;
 use tokio::sync::Mutex;
 
-const OLLAMA_PORT: u16 = 11434;
+const OLLAMA_PORT: u16 = 11436;
 const JARVIS_PORT: u16 = 8000;
 
-/// Small, fast model pulled at startup so the app opens quickly.
-const STARTUP_MODEL: &str = "qwen3.5:4b";
+/// Small, stable model pulled at startup so the app opens reliably on low-memory systems.
+const STARTUP_MODEL: &str = "qwen3.5:2b";
 
 /// Tiny fallback model if even the startup model can't be pulled.
 const FALLBACK_MODEL: &str = "qwen3:0.6b";
@@ -90,7 +91,7 @@ fn models_that_fit() -> Vec<&'static str> {
 /// falls back to the third-largest model that fits on this machine.
 fn preferred_model() -> &'static str {
     let fitting = models_that_fit();
-    // Prefer STARTUP_MODEL when it fits (fast, good quality)
+    // Prefer STARTUP_MODEL when it fits (stable default on modest systems)
     if fitting.contains(&STARTUP_MODEL) {
         return STARTUP_MODEL;
     }
@@ -409,7 +410,45 @@ async fn pull_model(model: &str) -> Result<(), String> {
 // Backend boot sequence (runs in background after app launch)
 // ---------------------------------------------------------------------------
 
+#[allow(unreachable_code, unused_variables)]
 async fn boot_backend(backend: SharedBackend, status: SharedStatus) {
+    let existing_ollama_url = format!("http://127.0.0.1:{}/api/tags", OLLAMA_PORT);
+    let existing_server_url = format!("http://127.0.0.1:{}/health", JARVIS_PORT);
+
+    for _ in 0..30 {
+        if wait_for_url(&existing_ollama_url, Duration::from_secs(1)).await
+            && wait_for_url(&existing_server_url, Duration::from_secs(1)).await
+        {
+            let mut s = status.lock().await;
+            s.phase = "ready".into();
+            s.detail = "Using existing local backend.".into();
+            s.ollama_ready = true;
+            s.server_ready = true;
+            s.model_ready = true;
+            s.error = None;
+            return;
+        }
+
+        {
+            let mut s = status.lock().await;
+            s.phase = "server".into();
+            s.detail = "Waiting for local backend...".into();
+            s.ollama_ready = wait_for_url(&existing_ollama_url, Duration::from_millis(500)).await;
+            s.server_ready = false;
+            s.model_ready = s.ollama_ready;
+        }
+        tokio::time::sleep(Duration::from_secs(1)).await;
+    }
+
+    {
+        let mut s = status.lock().await;
+        s.error = Some(
+            "Local backend is not reachable. Start OpenJarvis with the Windows starter script."
+                .into(),
+        );
+        return;
+    }
+
     // Phase 1: Start Ollama
     {
         let mut s = status.lock().await;
@@ -976,6 +1015,20 @@ async fn fetch_models(api_url: String) -> Result<serde_json::Value, String> {
         .map_err(|e| format!("Invalid response: {}", e))
 }
 
+#[derive(serde::Serialize)]
+struct MemoryStatus {
+    vault_path: String,
+    inbox_path: String,
+    long_term_path: String,
+    profile_path: String,
+    db_path: String,
+    inbox_modified: Option<u64>,
+    long_term_modified: Option<u64>,
+    profile_modified: Option<u64>,
+    db_modified: Option<u64>,
+    needs_sync: bool,
+}
+
 #[tauri::command]
 async fn chat_completion(
     api_url: String,
@@ -1224,6 +1277,577 @@ async fn speech_health(api_url: String) -> Result<serde_json::Value, String> {
     Ok(body)
 }
 
+/// Speak text through the native operating-system voice.
+///
+/// WebView2's browser speech synthesis can be unreliable in packaged Tauri
+/// builds. On Windows we use the built-in SAPI voice via PowerShell instead.
+#[tauri::command]
+async fn speak_text(
+    text: String,
+    voice_name: Option<String>,
+    rate: Option<i32>,
+    volume: Option<i32>,
+) -> Result<(), String> {
+    let text: String = text.trim().chars().take(1200).collect();
+    if text.is_empty() {
+        return Ok(());
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        if voice_name.as_deref() == Some("Kokoro George UK") {
+            let home = home_dir();
+            let python = std::path::PathBuf::from(r"C:\Dev\OpenJarvis")
+                .join(".venv")
+                .join("Scripts")
+                .join("python.exe");
+            let script_path = std::path::PathBuf::from(&home).join("openjarvis_kokoro_tts.py");
+            if python.exists() && script_path.exists() {
+                let ps_script = r#"
+$text = $env:OPENJARVIS_TTS_TEXT
+$python = $env:OPENJARVIS_KOKORO_PYTHON
+$script = $env:OPENJARVIS_KOKORO_SCRIPT
+$out = Join-Path $env:TEMP ("openjarvis-kokoro-" + [guid]::NewGuid().ToString() + ".wav")
+try {
+    & $python $script --text $text --output $out --voice bm_george --speed 0.92
+    if ($LASTEXITCODE -eq 0 -and (Test-Path $out)) {
+        $player = New-Object System.Media.SoundPlayer $out
+        $player.PlaySync()
+    }
+} finally {
+    Remove-Item -LiteralPath $out -Force -ErrorAction SilentlyContinue
+}
+"#;
+                tokio::process::Command::new("powershell")
+                    .args([
+                        "-NoProfile",
+                        "-ExecutionPolicy",
+                        "Bypass",
+                        "-WindowStyle",
+                        "Hidden",
+                        "-Command",
+                        ps_script,
+                    ])
+                    .env("OPENJARVIS_TTS_TEXT", text)
+                    .env("OPENJARVIS_KOKORO_PYTHON", python.to_string_lossy().to_string())
+                    .env("OPENJARVIS_KOKORO_SCRIPT", script_path.to_string_lossy().to_string())
+                    .stdout(std::process::Stdio::null())
+                    .stderr(std::process::Stdio::null())
+                    .spawn()
+                    .map_err(|e| format!("Failed to start Kokoro TTS: {}", e))?;
+                return Ok(());
+            }
+        }
+
+        if voice_name.as_deref() == Some("Piper Alan UK") {
+            let home = home_dir();
+            let piper = std::path::PathBuf::from(&home)
+                .join(".openjarvis-local")
+                .join("tts")
+                .join("piper")
+                .join("piper")
+                .join("piper.exe");
+            let model = std::path::PathBuf::from(&home)
+                .join(".openjarvis-local")
+                .join("tts")
+                .join("voices")
+                .join("en_GB-alan-medium")
+                .join("en_GB-alan-medium.onnx");
+            if piper.exists() && model.exists() {
+                let script = r#"
+$text = $env:OPENJARVIS_TTS_TEXT
+$piper = $env:OPENJARVIS_PIPER_EXE
+$model = $env:OPENJARVIS_PIPER_MODEL
+$out = Join-Path $env:TEMP ("openjarvis-tts-" + [guid]::NewGuid().ToString() + ".wav")
+try {
+    $text | & $piper --model $model --output_file $out --length_scale 1.18 --noise_scale 0.58 --noise_w 0.72 --sentence_silence 0.28 --quiet
+    Add-Type -AssemblyName System.Windows.Forms
+    $player = New-Object System.Media.SoundPlayer $out
+    $player.PlaySync()
+} finally {
+    Remove-Item -LiteralPath $out -Force -ErrorAction SilentlyContinue
+}
+"#;
+                tokio::process::Command::new("powershell")
+                    .args([
+                        "-NoProfile",
+                        "-ExecutionPolicy",
+                        "Bypass",
+                        "-WindowStyle",
+                        "Hidden",
+                        "-Command",
+                        script,
+                    ])
+                    .env("OPENJARVIS_TTS_TEXT", text)
+                    .env("OPENJARVIS_PIPER_EXE", piper.to_string_lossy().to_string())
+                    .env("OPENJARVIS_PIPER_MODEL", model.to_string_lossy().to_string())
+                    .stdout(std::process::Stdio::null())
+                    .stderr(std::process::Stdio::null())
+                    .spawn()
+                    .map_err(|e| format!("Failed to start Piper TTS: {}", e))?;
+                return Ok(());
+            }
+        }
+
+        let script = r#"
+Add-Type -AssemblyName System.Speech
+$synth = New-Object System.Speech.Synthesis.SpeechSynthesizer
+$voiceName = $env:OPENJARVIS_TTS_VOICE
+if ($voiceName) {
+    try { $synth.SelectVoice($voiceName) } catch {}
+}
+$rate = 0
+if ([int]::TryParse($env:OPENJARVIS_TTS_RATE, [ref]$rate)) {
+    $synth.Rate = [Math]::Max(-10, [Math]::Min(10, $rate))
+}
+$volume = 100
+if ([int]::TryParse($env:OPENJARVIS_TTS_VOLUME, [ref]$volume)) {
+    $synth.Volume = [Math]::Max(0, [Math]::Min(100, $volume))
+}
+$synth.Speak($env:OPENJARVIS_TTS_TEXT)
+"#;
+        tokio::process::Command::new("powershell")
+            .args([
+                "-NoProfile",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-WindowStyle",
+                "Hidden",
+                "-Command",
+                script,
+            ])
+            .env("OPENJARVIS_TTS_TEXT", text)
+            .env("OPENJARVIS_TTS_VOICE", voice_name.unwrap_or_default())
+            .env("OPENJARVIS_TTS_RATE", rate.unwrap_or(0).to_string())
+            .env("OPENJARVIS_TTS_VOLUME", volume.unwrap_or(100).to_string())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .map_err(|e| format!("Failed to start Windows TTS: {}", e))?;
+        return Ok(());
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        Err("Native TTS is only implemented for Windows desktop builds.".into())
+    }
+}
+
+#[tauri::command]
+async fn stop_tts() -> Result<(), String> {
+    #[cfg(target_os = "windows")]
+    {
+        let script = r#"
+Get-CimInstance Win32_Process -ErrorAction SilentlyContinue |
+  Where-Object {
+    $_.Name -eq 'powershell.exe' -and (
+      $_.CommandLine -like '*OPENJARVIS_TTS_TEXT*' -or
+      $_.CommandLine -like '*openjarvis_kokoro_tts.py*' -or
+      $_.CommandLine -like '*openjarvis-tts-*' -or
+      $_.CommandLine -like '*openjarvis-kokoro-*'
+    )
+  } |
+  ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
+
+Get-CimInstance Win32_Process -ErrorAction SilentlyContinue |
+  Where-Object {
+    ($_.Name -eq 'python.exe' -or $_.Name -eq 'piper.exe') -and (
+      $_.CommandLine -like '*openjarvis_kokoro_tts.py*' -or
+      $_.CommandLine -like '*en_GB-alan-medium.onnx*'
+    )
+  } |
+  ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
+"#;
+        tokio::process::Command::new("powershell")
+            .args([
+                "-NoProfile",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-WindowStyle",
+                "Hidden",
+                "-Command",
+                script,
+            ])
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .map_err(|e| format!("Failed to stop TTS: {}", e))?;
+        return Ok(());
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        Ok(())
+    }
+}
+
+#[tauri::command]
+async fn list_tts_voices() -> Result<serde_json::Value, String> {
+    #[cfg(target_os = "windows")]
+    {
+        let script = r#"
+Add-Type -AssemblyName System.Speech
+$synth = New-Object System.Speech.Synthesis.SpeechSynthesizer
+@($synth.GetInstalledVoices() | ForEach-Object {
+    $info = $_.VoiceInfo
+    [PSCustomObject]@{
+        name = $info.Name
+        culture = $info.Culture.Name
+        gender = $info.Gender.ToString()
+        age = $info.Age.ToString()
+    }
+}) | ConvertTo-Json -Compress
+"#;
+        let output = tokio::process::Command::new("powershell")
+            .args([
+                "-NoProfile",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-WindowStyle",
+                "Hidden",
+                "-Command",
+                script,
+            ])
+            .output()
+            .await
+            .map_err(|e| format!("Failed to list Windows TTS voices: {}", e))?;
+        if !output.status.success() {
+            return Err(String::from_utf8_lossy(&output.stderr).trim().to_string());
+        }
+        let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        let mut voices: Vec<serde_json::Value> = if stdout.is_empty() {
+            Vec::new()
+        } else {
+            match serde_json::from_str::<serde_json::Value>(&stdout)
+                .map_err(|e| format!("Invalid voice list: {}", e))?
+            {
+                serde_json::Value::Array(items) => items,
+                item => vec![item],
+            }
+        };
+
+        let home = home_dir();
+        let piper = std::path::PathBuf::from(&home)
+            .join(".openjarvis-local")
+            .join("tts")
+            .join("piper")
+            .join("piper")
+            .join("piper.exe");
+        let model = std::path::PathBuf::from(&home)
+            .join(".openjarvis-local")
+            .join("tts")
+            .join("voices")
+            .join("en_GB-alan-medium")
+            .join("en_GB-alan-medium.onnx");
+        if piper.exists() && model.exists() {
+            voices.insert(
+                0,
+                serde_json::json!({
+                    "name": "Piper Alan UK",
+                    "culture": "en-GB",
+                    "gender": "Male",
+                    "age": "Adult"
+                }),
+            );
+        }
+        let kokoro_script = std::path::PathBuf::from(&home).join("openjarvis_kokoro_tts.py");
+        let kokoro_python = std::path::PathBuf::from(r"C:\Dev\OpenJarvis")
+            .join(".venv")
+            .join("Scripts")
+            .join("python.exe");
+        if kokoro_script.exists() && kokoro_python.exists() {
+            voices.insert(
+                0,
+                serde_json::json!({
+                    "name": "Kokoro George UK",
+                    "culture": "en-GB",
+                    "gender": "Male",
+                    "age": "Adult"
+                }),
+            );
+        }
+        Ok(serde_json::Value::Array(voices))
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        Ok(serde_json::json!([]))
+    }
+}
+
+#[tauri::command]
+async fn play_voice_cue(kind: String) -> Result<(), String> {
+    #[cfg(target_os = "windows")]
+    {
+        let (frequency, duration) = match kind.as_str() {
+            "start" => (880, 90),
+            "stop" => (520, 110),
+            "error" => (300, 180),
+            _ => (700, 80),
+        };
+        let script = format!("[Console]::Beep({}, {})", frequency, duration);
+        tokio::process::Command::new("powershell")
+            .args([
+                "-NoProfile",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-WindowStyle",
+                "Hidden",
+                "-Command",
+                &script,
+            ])
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .map_err(|e| format!("Failed to play voice cue: {}", e))?;
+        return Ok(());
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        let _ = kind;
+        Ok(())
+    }
+}
+
+#[tauri::command]
+async fn play_wake_ack() -> Result<(), String> {
+    #[cfg(target_os = "windows")]
+    {
+        let wav = std::path::PathBuf::from(home_dir())
+            .join(".openjarvis-local")
+            .join("tts")
+            .join("wake-yes-sir.wav");
+        if !wav.exists() {
+            return Err(format!("Wake acknowledgement missing: {}", wav.display()));
+        }
+        let script = r#"
+$wav = $env:OPENJARVIS_WAKE_ACK
+if (Test-Path $wav) {
+    $player = New-Object System.Media.SoundPlayer $wav
+    $player.PlaySync()
+}
+"#;
+        tokio::process::Command::new("powershell")
+            .args([
+                "-NoProfile",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-WindowStyle",
+                "Hidden",
+                "-Command",
+                script,
+            ])
+            .env("OPENJARVIS_WAKE_ACK", wav.to_string_lossy().to_string())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .map_err(|e| format!("Failed to play wake acknowledgement: {}", e))?;
+        return Ok(());
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        Ok(())
+    }
+}
+
+#[tauri::command]
+async fn remember_text(text: String) -> Result<(), String> {
+    run_brain_text_command("add", &text).await
+}
+
+#[tauri::command]
+async fn promote_memory_text(text: String) -> Result<(), String> {
+    run_brain_text_command("promote", &text).await
+}
+
+#[tauri::command]
+async fn open_memory_target(target: String) -> Result<(), String> {
+    let brain_dir = memory_brain_dir();
+    let path = match target.as_str() {
+        "vault" => brain_dir,
+        "inbox" => brain_dir.join("00_Inbox").join("Inbox.md"),
+        "long_term" => brain_dir.join("30_Memory").join("LongTermMemory.md"),
+        "profile" => brain_dir.join("10_Profile").join("Leonn.md"),
+        _ => return Err(format!("Unknown memory target: {}", target)),
+    };
+
+    if !path.exists() {
+        return Err(format!("Memory target not found: {}", path.display()));
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        tokio::process::Command::new("explorer.exe")
+            .arg(path)
+            .spawn()
+            .map_err(|e| format!("Failed to open memory target: {}", e))?;
+        return Ok(());
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        Err("Opening memory files is only implemented for Windows desktop builds.".into())
+    }
+}
+
+#[tauri::command]
+async fn open_local_target(target: String) -> Result<(), String> {
+    let home = std::path::PathBuf::from(home_dir());
+    let path = match target.as_str() {
+        "repo" => std::path::PathBuf::from(r"C:\Dev\OpenJarvis"),
+        "config" => home.join(".openjarvis").join("config.toml"),
+        "backend_log" => home.join("openjarvis-backend.log"),
+        "backend_error_log" => home.join("openjarvis-backend.err.log"),
+        "watchdog_log" => home.join("openjarvis-watchdog.log"),
+        "startup" => home
+            .join("AppData")
+            .join("Roaming")
+            .join("Microsoft")
+            .join("Windows")
+            .join("Start Menu")
+            .join("Programs")
+            .join("Startup"),
+        _ => return Err(format!("Unknown local target: {}", target)),
+    };
+
+    if !path.exists() {
+        return Err(format!("Local target not found: {}", path.display()));
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        tokio::process::Command::new("explorer.exe")
+            .arg(path)
+            .spawn()
+            .map_err(|e| format!("Failed to open local target: {}", e))?;
+        return Ok(());
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        Err("Opening local targets is only implemented for Windows desktop builds.".into())
+    }
+}
+
+#[tauri::command]
+async fn get_memory_status() -> Result<MemoryStatus, String> {
+    let brain_dir = memory_brain_dir();
+    let inbox = brain_dir.join("00_Inbox").join("Inbox.md");
+    let long_term = brain_dir.join("30_Memory").join("LongTermMemory.md");
+    let profile = brain_dir.join("10_Profile").join("Leonn.md");
+    let db = brain_dir.join("openjarvis-memory.db");
+
+    let inbox_modified = modified_unix_seconds(&inbox);
+    let long_term_modified = modified_unix_seconds(&long_term);
+    let profile_modified = modified_unix_seconds(&profile);
+    let db_modified = modified_unix_seconds(&db);
+    let newest_markdown = [inbox_modified, long_term_modified, profile_modified]
+        .into_iter()
+        .flatten()
+        .max();
+    let needs_sync = match (newest_markdown, db_modified) {
+        (Some(md), Some(db_time)) => md > db_time,
+        (Some(_), None) => true,
+        _ => false,
+    };
+
+    Ok(MemoryStatus {
+        vault_path: brain_dir.display().to_string(),
+        inbox_path: inbox.display().to_string(),
+        long_term_path: long_term.display().to_string(),
+        profile_path: profile.display().to_string(),
+        db_path: db.display().to_string(),
+        inbox_modified,
+        long_term_modified,
+        profile_modified,
+        db_modified,
+        needs_sync,
+    })
+}
+
+#[tauri::command]
+async fn sync_memory_brain() -> Result<(), String> {
+    let sync_script = std::path::PathBuf::from(home_dir()).join("sync-openjarvis-brain.ps1");
+    if !sync_script.exists() {
+        return Err(format!("Brain sync script not found: {}", sync_script.display()));
+    }
+
+    let output = tokio::process::Command::new("powershell")
+        .args([
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            sync_script.to_string_lossy().as_ref(),
+        ])
+        .output()
+        .await
+        .map_err(|e| format!("Failed to run brain sync: {}", e))?;
+
+    if output.status.success() {
+        Ok(())
+    } else {
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        Err(if !stderr.is_empty() { stderr } else { stdout })
+    }
+}
+
+fn memory_brain_dir() -> std::path::PathBuf {
+    std::path::PathBuf::from(home_dir())
+        .join("Documents")
+        .join("Obsidian Vault")
+        .join("Jarvis")
+}
+
+fn modified_unix_seconds(path: &std::path::Path) -> Option<u64> {
+    path.metadata()
+        .ok()
+        .and_then(|m| m.modified().ok())
+        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|d| d.as_secs())
+}
+
+async fn run_brain_text_command(command: &str, text: &str) -> Result<(), String> {
+    let text = text.trim();
+    if text.is_empty() {
+        return Err("Nothing to store.".into());
+    }
+
+    if command != "add" && command != "promote" {
+        return Err(format!("Unsupported brain command: {}", command));
+    }
+
+    let brain_script = std::path::PathBuf::from(home_dir()).join("jarvis-brain.ps1");
+    if !brain_script.exists() {
+        return Err(format!("Brain script not found: {}", brain_script.display()));
+    }
+
+    let output = tokio::process::Command::new("powershell")
+        .args([
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            brain_script.to_string_lossy().as_ref(),
+            command,
+            text,
+        ])
+        .output()
+        .await
+        .map_err(|e| format!("Failed to run brain script: {}", e))?;
+
+    if output.status.success() {
+        Ok(())
+    } else {
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        Err(if !stderr.is_empty() { stderr } else { stdout })
+    }
+}
+
 // ---------------------------------------------------------------------------
 // App entry point
 // ---------------------------------------------------------------------------
@@ -1235,13 +1859,23 @@ pub fn run() {
 
     let boot_backend_ref = backend.clone();
     let boot_status_ref = status.clone();
+    let push_to_talk_shortcut = Shortcut::new(Some(Modifiers::CONTROL | Modifiers::ALT), Code::KeyJ);
+    let global_shortcut_plugin = tauri_plugin_global_shortcut::Builder::new()
+        .with_shortcut(push_to_talk_shortcut)
+        .expect("failed to configure push-to-talk shortcut")
+        .with_handler(|app, _shortcut, event| {
+            if event.state == ShortcutState::Pressed {
+                let _ = app.emit("openjarvis-push-to-talk", ());
+            }
+        })
+        .build();
 
     tauri::Builder::default()
         .manage(backend.clone())
         .manage(status.clone())
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_shell::init())
-        .plugin(tauri_plugin_global_shortcut::Builder::new().build())
+        .plugin(global_shortcut_plugin)
         .plugin(tauri_plugin_autostart::init(
             MacosLauncher::LaunchAgent,
             Some(vec!["--hidden"]),
@@ -1322,6 +1956,17 @@ pub fn run() {
             delete_ollama_model,
             save_cloud_key,
             get_cloud_key_status,
+            speak_text,
+            stop_tts,
+            list_tts_voices,
+            play_voice_cue,
+            play_wake_ack,
+            remember_text,
+            promote_memory_text,
+            open_memory_target,
+            open_local_target,
+            get_memory_status,
+            sync_memory_brain,
         ])
         .build(tauri::generate_context!())
         .expect("error while building OpenJarvis Desktop")

@@ -22,13 +22,38 @@ from openjarvis.engine._base import (
 logger = logging.getLogger(__name__)
 
 
+def _default_num_ctx() -> int:
+    """Keep local Ollama requests responsive on consumer machines."""
+    raw = os.environ.get("OPENJARVIS_NUM_CTX") or os.environ.get(
+        "OLLAMA_CONTEXT_LENGTH",
+        "2048",
+    )
+    try:
+        return max(512, int(raw))
+    except (TypeError, ValueError):
+        return 2048
+
+
+def _default_keep_alive() -> str:
+    return os.environ.get("OPENJARVIS_OLLAMA_KEEP_ALIVE", "30m")
+
+
+def _default_num_gpu() -> int:
+    """Disable GPU offload when the local Ollama stack is configured that way."""
+    raw = os.environ.get("OPENJARVIS_OLLAMA_NUM_GPU", "0")
+    try:
+        return max(0, int(raw))
+    except (TypeError, ValueError):
+        return 0
+
+
 @EngineRegistry.register("ollama")
 class OllamaEngine(InferenceEngine):
     """Ollama backend via its native HTTP API."""
 
     engine_id = "ollama"
 
-    _DEFAULT_HOST = "http://localhost:11434"
+    _DEFAULT_HOST = "http://127.0.0.1:11434"
 
     def __init__(
         self,
@@ -69,10 +94,12 @@ class OllamaEngine(InferenceEngine):
             "model": model,
             "messages": msg_dicts,
             "stream": False,
+            "keep_alive": kwargs.get("keep_alive", _default_keep_alive()),
             "options": {
                 "temperature": temperature,
                 "num_predict": max_tokens,
-                "num_ctx": kwargs.get("num_ctx", 8192),
+                "num_ctx": kwargs.get("num_ctx", _default_num_ctx()),
+                "num_gpu": kwargs.get("num_gpu", _default_num_gpu()),
             },
         }
         # Disable extended thinking by default (Qwen3.5 etc.).
@@ -97,9 +124,13 @@ class OllamaEngine(InferenceEngine):
             elif isinstance(response_format, dict):
                 payload["format"] = "json"
         try:
+            import logging as _log
+            _log.getLogger("openjarvis.ollama").info("Sending to Ollama: tools=%s", bool(tools))
+            if tools:
+                _log.getLogger("openjarvis.ollama").info("Tool count: %d, names: %s", len(tools), [t.get("function",{}).get("name","?") for t in tools])
             resp = self._client.post("/api/chat", json=payload)
             if resp.status_code == 400 and tools:
-                # Model may not support function calling -- retry without tools
+                _log.getLogger("openjarvis.ollama").warning("Ollama returned 400 with tools - retrying without")
                 payload.pop("tools", None)
                 resp = self._client.post("/api/chat", json=payload)
             resp.raise_for_status()
@@ -185,10 +216,13 @@ class OllamaEngine(InferenceEngine):
             "model": model,
             "messages": messages_to_dicts(messages),
             "stream": True,
+            "think": False,
+            "keep_alive": kwargs.get("keep_alive", _default_keep_alive()),
             "options": {
                 "temperature": temperature,
                 "num_predict": max_tokens,
-                "num_ctx": kwargs.get("num_ctx", 8192),
+                "num_ctx": kwargs.get("num_ctx", _default_num_ctx()),
+                "num_gpu": kwargs.get("num_gpu", _default_num_gpu()),
             },
         }
         try:

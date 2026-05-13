@@ -118,8 +118,10 @@ def inject_context(
         },
     )
 
-    # Build context message and prepend
+    # Keep the primary persona/system prompt first; insert memory right after it.
     ctx_msg = build_context_message(truncated)
+    if messages and messages[0].role == Role.SYSTEM:
+        return [messages[0], ctx_msg, *list(messages[1:])]
     return [ctx_msg] + list(messages)
 
 

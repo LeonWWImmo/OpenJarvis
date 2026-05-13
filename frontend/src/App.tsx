@@ -50,11 +50,20 @@ export default function App() {
     fetchModels()
       .then((m) => {
         setModels(m);
-        if (!selectedModel && m.length > 0) setSelectedModel(m[0].id);
+        if (!selectedModel && m.length > 0) {
+          const preferred =
+            settings.defaultModel ||
+            m.find((x) => x.id === 'qwen3.5:4b')?.id ||
+            m.find((x) => x.id === 'qwen3.5:2b')?.id ||
+            m.find((x) => x.id === 'qwen3.5:0.8b')?.id ||
+            m.find((x) => x.id === 'qwen3:0.6b')?.id ||
+            m[0].id;
+          setSelectedModel(preferred);
+        }
       })
       .catch(() => setModels([]))
       .finally(() => setModelsLoading(false));
-  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [selectedModel, setModels, setModelsLoading, setSelectedModel, settings.defaultModel]);
 
   // Fetch server info
   useEffect(() => {

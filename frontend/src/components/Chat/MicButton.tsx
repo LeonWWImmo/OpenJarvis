@@ -15,14 +15,14 @@ export function MicButton({ state, onClick, disabled, reason }: MicButtonProps) 
     reason === 'not-enabled'
       ? 'Enable in Settings'
       : reason === 'no-backend'
-        ? 'Speech backend not configured'
+        ? 'Voice input unavailable'
         : reason === 'streaming'
           ? 'Wait for response'
           : state === 'recording'
             ? 'Stop recording'
             : state === 'transcribing'
               ? 'Transcribing...'
-              : 'Voice input';
+              : 'Voice input (Ctrl+Alt+J)';
 
   const isInactive = disabled || state === 'transcribing';
 
@@ -49,6 +49,7 @@ export function MicButton({ state, onClick, disabled, reason }: MicButtonProps) 
           opacity: isInactive ? 0.35 : 1,
           animation: state === 'recording' ? 'pulse 1.5s ease-in-out infinite' : 'none',
         }}
+        title={tooltipText}
       >
         {state === 'transcribing' ? (
           <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">

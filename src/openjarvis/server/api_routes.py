@@ -148,13 +148,24 @@ async def message_agent(agent_id: str, req: AgentMessageRequest, request: Reques
 memory_router = APIRouter(prefix="/v1/memory", tags=["memory"])
 
 
+def _get_memory_backend(request: Request):
+    backend = getattr(request.app.state, "memory_backend", None)
+    if backend is not None:
+        return backend
+
+    from openjarvis.tools.storage.sqlite import SQLiteMemory
+
+    config = getattr(request.app.state, "config", None)
+    memory_cfg = getattr(config, "memory", None) if config is not None else None
+    db_path = getattr(memory_cfg, "db_path", "") or ""
+    return SQLiteMemory(db_path=db_path)
+
+
 @memory_router.post("/store")
 async def memory_store(req: MemoryStoreRequest, request: Request):
     """Store content in memory."""
     try:
-        from openjarvis.tools.storage.sqlite import SQLiteMemory
-
-        backend = SQLiteMemory()
+        backend = _get_memory_backend(request)
         backend.store(req.content, metadata=req.metadata or {})
         return {"status": "stored"}
     except Exception as exc:
@@ -165,12 +176,15 @@ async def memory_store(req: MemoryStoreRequest, request: Request):
 async def memory_search(req: MemorySearchRequest, request: Request):
     """Search memory for relevant content."""
     try:
-        from openjarvis.tools.storage.sqlite import SQLiteMemory
-
-        backend = SQLiteMemory()
-        results = backend.search(req.query, top_k=req.top_k)
+        backend = _get_memory_backend(request)
+        results = backend.retrieve(req.query, top_k=req.top_k)
         items = [
-            {"content": r.content, "score": r.score, "metadata": r.metadata}
+            {
+                "content": r.content,
+                "score": r.score,
+                "source": getattr(r, "source", ""),
+                "metadata": r.metadata,
+            }
             for r in results
         ]
         return {"results": items}
@@ -182,11 +196,13 @@ async def memory_search(req: MemorySearchRequest, request: Request):
 async def memory_stats(request: Request):
     """Get memory backend statistics."""
     try:
-        from openjarvis.tools.storage.sqlite import SQLiteMemory
-
-        backend = SQLiteMemory()
-        stats = backend.stats()
-        return stats
+        backend = _get_memory_backend(request)
+        count = backend.count() if hasattr(backend, "count") else None
+        return {
+            "backend": getattr(backend, "backend_id", "unknown"),
+            "documents": count,
+            "db_path": getattr(backend, "_db_path", ""),
+        }
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc))
 
@@ -677,6 +693,9 @@ async def transcribe_speech(request: Request):
 
     audio_bytes = await audio_file.read()
     language = form.get("language")
+    if not language:
+        config = getattr(request.app.state, "config", None)
+        language = getattr(getattr(config, "speech", None), "language", "") or None
 
     # Detect format from filename
     filename = getattr(audio_file, "filename", "audio.wav")

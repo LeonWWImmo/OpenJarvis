@@ -39,12 +39,30 @@ function generateId(): string {
   return Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
 }
 
+function isSyntheticAssistantError(message: ChatMessage): boolean {
+  if (message.role !== 'assistant') return false;
+  const text = message.content.trim();
+  return (
+    text.startsWith('Error: HTTP ') ||
+    text.startsWith('Error: Connection failed') ||
+    text.startsWith('Error: Chat request failed') ||
+    text.startsWith('No response was generated')
+  );
+}
+
+function sanitizeConversationStore(store: ConversationStore): ConversationStore {
+  for (const conv of Object.values(store.conversations)) {
+    conv.messages = conv.messages.filter((m) => !isSyntheticAssistantError(m));
+  }
+  return store;
+}
+
 function loadConversations(): ConversationStore {
   try {
     const raw = localStorage.getItem(CONVERSATIONS_KEY);
     if (!raw) return { version: 1, conversations: {}, activeId: null };
     const parsed = JSON.parse(raw);
-    if (parsed.version === 1) return parsed;
+    if (parsed.version === 1) return sanitizeConversationStore(parsed);
     return { version: 1, conversations: {}, activeId: null };
   } catch {
     return { version: 1, conversations: {}, activeId: null };
@@ -66,23 +84,44 @@ interface Settings {
   temperature: number;
   maxTokens: number;
   speechEnabled: boolean;
+  wakeWordEnabled: boolean;
+  wakeWord: string;
+  wakeCaptureSeconds: number;
+  ttsEnabled: boolean;
+  voiceAutoSend: boolean;
+  ttsVoiceName: string;
+  ttsRate: number;
+  ttsVolume: number;
 }
 
 function loadSettings(): Settings {
   const defaults: Settings = {
-    theme: 'system',
+    theme: 'dark',
     apiUrl: '',
     fontSize: 'default',
-    defaultModel: '',
+    defaultModel: 'qwen3.5:4b',
     defaultAgent: '',
     temperature: 0.7,
-    maxTokens: 4096,
-    speechEnabled: false,
+    maxTokens: 1024,
+    speechEnabled: true,
+    wakeWordEnabled: true,
+    wakeWord: 'jarvis',
+    wakeCaptureSeconds: 20,
+    ttsEnabled: true,
+    voiceAutoSend: true,
+    ttsVoiceName: 'Kokoro George UK',
+    ttsRate: -1,
+    ttsVolume: 100,
   };
   try {
     const raw = localStorage.getItem(SETTINGS_KEY);
     if (!raw) return defaults;
-    return { ...defaults, ...JSON.parse(raw) };
+    const parsed = JSON.parse(raw);
+    if (parsed.wakeCaptureSeconds === 7) parsed.wakeCaptureSeconds = 20;
+    if (!parsed.theme || parsed.theme === 'system') parsed.theme = 'dark';
+    parsed.speechEnabled = true;
+    parsed.wakeWordEnabled = parsed.wakeWordEnabled ?? true;
+    return { ...defaults, ...parsed };
   } catch {
     return defaults;
   }
