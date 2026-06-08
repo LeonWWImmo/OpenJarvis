@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import {
   Settings,
   Palette,
@@ -800,6 +800,11 @@ export function SettingsPage() {
             )}
           </Section>
 
+          {/* JARVIS Voice Loop (Kokoro) */}
+          <Section title="JARVIS Voice (Voice Loop)">
+            <JarvisVoiceSection />
+          </Section>
+
           {/* Data */}
           <Section title="Data">
             <SettingRow label="Diagnostics" description="Open local project files and logs for troubleshooting">
@@ -969,6 +974,183 @@ export function SettingsPage() {
           </Section>
         </div>
       </div>
+    </div>
+  );
+}
+
+// ====== JARVIS Voice Loop — Voice Selector + Tester ======
+
+const VOICE_LOOP_BASE = 'http://127.0.0.1:8770';
+
+function JarvisVoiceSection() {
+  const [voices, setVoices] = useState<Record<string, string>>({});
+  const [active, setActive] = useState<string>('');
+  const [testing, setTesting] = useState<string | null>(null);
+  const [reachable, setReachable] = useState<boolean | null>(null);
+  const [testText, setTestText] = useState('Hello Sir, this is a voice test.');
+
+  const refresh = useCallback(async () => {
+    try {
+      const r = await fetch(`${VOICE_LOOP_BASE}/voices`);
+      const d = await r.json();
+      setVoices(d.voices ?? {});
+      setActive(d.active ?? '');
+      setReachable(true);
+    } catch {
+      setReachable(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    refresh();
+  }, [refresh]);
+
+  const applyVoice = async (voiceId: string) => {
+    try {
+      await fetch(`${VOICE_LOOP_BASE}/set_voice`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ voice: voiceId }),
+      });
+      setActive(voiceId);
+    } catch { /* ignore */ }
+  };
+
+  const testVoice = async (voiceId: string) => {
+    setTesting(voiceId);
+    try {
+      await fetch(`${VOICE_LOOP_BASE}/say`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ text: testText, voice: voiceId }),
+      });
+      // Poll until pipeline_busy turns false
+      for (let i = 0; i < 30; i++) {
+        await new Promise((res) => setTimeout(res, 500));
+        try {
+          const r = await fetch(`${VOICE_LOOP_BASE}/health`);
+          const h = await r.json();
+          if (!h.pipeline_busy) break;
+        } catch { /* ignore */ }
+      }
+    } finally {
+      setTesting(null);
+    }
+  };
+
+  if (reachable === false) {
+    return (
+      <div className="text-xs p-3 rounded-lg" style={{
+        background: 'var(--color-bg)',
+        border: '1px solid var(--color-border)',
+        color: 'var(--color-text-tertiary)',
+      }}>
+        Voice loop is not reachable (expected at <code>{VOICE_LOOP_BASE}</code>). Start it with{' '}
+        <code>start-openjarvis-voice-loop.ps1</code>.
+      </div>
+    );
+  }
+
+  const aliasEntries = Object.entries(voices);
+
+  return (
+    <div className="space-y-3">
+      <SettingRow
+        label="Test sentence"
+        description="What each voice should say when you press Test"
+      >
+        <input
+          type="text"
+          value={testText}
+          onChange={(e) => setTestText(e.target.value)}
+          className="px-2 py-1.5 rounded-md text-sm outline-none w-full max-w-md"
+          style={{
+            background: 'var(--color-bg)',
+            color: 'var(--color-text)',
+            border: '1px solid var(--color-border)',
+          }}
+        />
+      </SettingRow>
+
+      <SettingRow
+        label="Active voice"
+        description={`Currently: ${active || 'unknown'}. Click "Use" to make it permanent for this session.`}
+      >
+        <div />
+      </SettingRow>
+
+      <div className="rounded-lg p-2 space-y-1" style={{
+        background: 'var(--color-bg)',
+        border: '1px solid var(--color-border)',
+        maxHeight: '320px',
+        overflowY: 'auto',
+      }}>
+        {aliasEntries.length === 0 ? (
+          <div className="text-xs p-2" style={{ color: 'var(--color-text-tertiary)' }}>
+            Loading voices…
+          </div>
+        ) : (
+          aliasEntries.map(([alias, voiceId]) => {
+            const isActive = voiceId === active;
+            const isTesting = testing === voiceId;
+            const flavor =
+              voiceId.startsWith('bm_') ? 'British male' :
+              voiceId.startsWith('bf_') ? 'British female' :
+              voiceId.startsWith('am_') ? 'American male' :
+              voiceId.startsWith('af_') ? 'American female' : '';
+            return (
+              <div
+                key={voiceId}
+                className="flex items-center gap-3 px-2 py-1.5 rounded-md"
+                style={{
+                  background: isActive ? 'var(--color-accent-subtle)' : 'transparent',
+                }}
+              >
+                <div className="flex-1 min-w-0">
+                  <div className="text-sm capitalize" style={{ color: 'var(--color-text)' }}>
+                    {alias}
+                    {isActive && (
+                      <span className="ml-2 text-xs" style={{ color: 'var(--color-accent)' }}>
+                        active
+                      </span>
+                    )}
+                  </div>
+                  <div className="text-xs" style={{ color: 'var(--color-text-tertiary)' }}>
+                    {voiceId} · {flavor}
+                  </div>
+                </div>
+                <button
+                  onClick={() => testVoice(voiceId)}
+                  disabled={isTesting || testing !== null}
+                  className="px-2.5 py-1 rounded-md text-xs transition-opacity disabled:opacity-40 cursor-pointer"
+                  style={{
+                    background: 'var(--color-bg-secondary)',
+                    color: 'var(--color-text)',
+                    border: '1px solid var(--color-border)',
+                  }}
+                >
+                  {isTesting ? '...' : 'Test'}
+                </button>
+                <button
+                  onClick={() => applyVoice(voiceId)}
+                  disabled={isActive}
+                  className="px-2.5 py-1 rounded-md text-xs transition-opacity disabled:opacity-40 cursor-pointer"
+                  style={{
+                    background: isActive ? 'var(--color-bg-secondary)' : 'var(--color-accent)',
+                    color: isActive ? 'var(--color-text-tertiary)' : 'white',
+                  }}
+                >
+                  {isActive ? '✓ in use' : 'Use'}
+                </button>
+              </div>
+            );
+          })
+        )}
+      </div>
+
+      <p className="text-xs" style={{ color: 'var(--color-text-tertiary)' }}>
+        For permanent default voice, set <code>OJ_TTS_VOICE</code> in <code>start-openjarvis-voice-loop.ps1</code>.
+      </p>
     </div>
   );
 }

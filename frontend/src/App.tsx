@@ -8,6 +8,8 @@ import { GetStartedPage } from './pages/GetStartedPage';
 import { AgentsPage } from './pages/AgentsPage';
 import { DataSourcesPage } from './pages/DataSourcesPage';
 import { LogsPage } from './pages/LogsPage';
+import { VoicePage } from './pages/VoicePage';
+import { JarvisHome } from './pages/JarvisHome';
 import { CommandPalette } from './components/CommandPalette';
 import { SetupScreen } from './components/SetupScreen';
 import { Toaster } from './components/ui/sonner';
@@ -51,12 +53,16 @@ export default function App() {
       .then((m) => {
         setModels(m);
         if (!selectedModel && m.length > 0) {
+          // Default: qwen3.5:2b (Voice-Loop verwendet das auch). Funktioniert
+          // stabil sobald Backend mit num_gpu=28 läuft (siehe start-backend.ps1).
+          // Bei laufendem alten Backend (num_gpu=999) crashed 2b/4b — dann
+          // muss der User auf qwen3.5:0.8b oder qwen3:0.6b manuell wechseln.
           const preferred =
             settings.defaultModel ||
-            m.find((x) => x.id === 'qwen3.5:4b')?.id ||
             m.find((x) => x.id === 'qwen3.5:2b')?.id ||
             m.find((x) => x.id === 'qwen3.5:0.8b')?.id ||
             m.find((x) => x.id === 'qwen3:0.6b')?.id ||
+            m.find((x) => x.id === 'qwen3.5:4b')?.id ||
             m[0].id;
           setSelectedModel(preferred);
         }
@@ -171,9 +177,13 @@ export default function App() {
     <>
       <Routes>
         <Route element={<Layout />}>
-          <Route index element={<ChatPage />} />
-          <Route path="dashboard" element={<DashboardPage />} />
+          {/* JARVIS-Home — minimalistisches Display. Alle System-Sachen unter /settings. */}
+          <Route index element={<JarvisHome />} />
           <Route path="settings" element={<SettingsPage />} />
+          {/* Legacy-Routes (versteckt) für Power-User */}
+          <Route path="voice" element={<VoicePage />} />
+          <Route path="classic-chat" element={<ChatPage />} />
+          <Route path="dashboard" element={<DashboardPage />} />
           <Route path="get-started" element={<GetStartedPage />} />
           <Route path="data-sources" element={<DataSourcesPage />} />
           <Route path="agents" element={<AgentsPage />} />

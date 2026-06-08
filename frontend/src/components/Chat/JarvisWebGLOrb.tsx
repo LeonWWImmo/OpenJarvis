@@ -7,6 +7,17 @@ import { useAppStore } from '../../lib/store';
 type OrbRefs = {
   activity: React.MutableRefObject<number>;
   voice: React.MutableRefObject<number>;
+  moodColor: React.MutableRefObject<THREE.Color>;
+};
+
+export type OrbMood = 'idle' | 'thinking' | 'success' | 'error' | 'sleeping';
+
+const MOOD_COLORS: Record<OrbMood, THREE.Color> = {
+  idle:     new THREE.Color('#19ddff'),
+  thinking: new THREE.Color('#ffba45'),
+  success:  new THREE.Color('#4ade80'),
+  error:    new THREE.Color('#f87171'),
+  sleeping: new THREE.Color('#1e3a8a'),
 };
 
 const TWO_PI = Math.PI * 2;
@@ -152,13 +163,26 @@ function JarvisParticleSphere({ activity, voice }: OrbRefs) {
   );
 }
 
-function JarvisCore({ activity, voice }: OrbRefs) {
+function JarvisCore({ activity, voice, moodColor }: OrbRefs) {
   const coreRef = useRef<THREE.Mesh>(null);
   const haloRef = useRef<THREE.Mesh>(null);
+  const baseCoreColor = useMemo(() => new THREE.Color('#dffcff'), []);
+  const baseHaloColor = useMemo(() => new THREE.Color('#19ddff'), []);
+  const tmpColor = useMemo(() => new THREE.Color(), []);
 
-  useFrame(({ clock }) => {
+  useFrame(({ clock }, delta) => {
     const t = clock.elapsedTime;
     const energy = activity.current + voice.current * 1.7;
+    // Mood-Lerp: tinten Halo + Core (Halo stark, Core subtil)
+    const lerpSpeed = Math.min(1, delta * 3.0);
+    if (haloRef.current && haloRef.current.material instanceof THREE.MeshBasicMaterial) {
+      tmpColor.copy(baseHaloColor).lerp(moodColor.current, 0.85);
+      haloRef.current.material.color.lerp(tmpColor, lerpSpeed);
+    }
+    if (coreRef.current && coreRef.current.material instanceof THREE.MeshBasicMaterial) {
+      tmpColor.copy(baseCoreColor).lerp(moodColor.current, 0.35);
+      coreRef.current.material.color.lerp(tmpColor, lerpSpeed);
+    }
     if (coreRef.current) {
       const scale = 0.5 + Math.sin(t * 1.35) * 0.025 + energy * 0.08;
       coreRef.current.scale.setScalar(scale);
@@ -199,8 +223,13 @@ function JarvisCore({ activity, voice }: OrbRefs) {
   );
 }
 
-function JarvisOrbitRings({ activity, voice }: OrbRefs) {
+function JarvisOrbitRings({ activity, voice, moodColor }: OrbRefs) {
   const groupRef = useRef<THREE.Group>(null);
+  const ringAMatRef = useRef<THREE.MeshBasicMaterial>(null);
+  const ringCMatRef = useRef<THREE.MeshBasicMaterial>(null);
+  const baseA = useMemo(() => new THREE.Color('#35ecff'), []);
+  const baseC = useMemo(() => new THREE.Color('#7df9ff'), []);
+  const tmp = useMemo(() => new THREE.Color(), []);
 
   useFrame(({ clock }, delta) => {
     const group = groupRef.current;
@@ -210,13 +239,23 @@ function JarvisOrbitRings({ activity, voice }: OrbRefs) {
     group.rotation.y += delta * speed;
     group.rotation.x = 0.72 + Math.sin(t * 0.12) * 0.12;
     group.rotation.z = Math.sin(t * 0.09) * 0.08;
+
+    const lerpSpeed = Math.min(1, delta * 3.0);
+    if (ringAMatRef.current) {
+      tmp.copy(baseA).lerp(moodColor.current, 0.55);
+      ringAMatRef.current.color.lerp(tmp, lerpSpeed);
+    }
+    if (ringCMatRef.current) {
+      tmp.copy(baseC).lerp(moodColor.current, 0.45);
+      ringCMatRef.current.color.lerp(tmp, lerpSpeed);
+    }
   });
 
   return (
     <group ref={groupRef}>
       <mesh rotation={[Math.PI / 2.8, 0.18, 0]}>
         <torusGeometry args={[2.14, 0.008, 8, 192]} />
-        <meshBasicMaterial color="#35ecff" transparent opacity={0.48} blending={THREE.AdditiveBlending} />
+        <meshBasicMaterial ref={ringAMatRef} color="#35ecff" transparent opacity={0.48} blending={THREE.AdditiveBlending} />
       </mesh>
       <mesh rotation={[Math.PI / 2.15, 0.92, 0.3]}>
         <torusGeometry args={[2.48, 0.006, 8, 192]} />
@@ -224,38 +263,63 @@ function JarvisOrbitRings({ activity, voice }: OrbRefs) {
       </mesh>
       <mesh rotation={[Math.PI / 1.75, -0.55, -0.2]}>
         <torusGeometry args={[1.72, 0.01, 8, 160]} />
-        <meshBasicMaterial color="#7df9ff" transparent opacity={0.38} blending={THREE.AdditiveBlending} />
+        <meshBasicMaterial ref={ringCMatRef} color="#7df9ff" transparent opacity={0.38} blending={THREE.AdditiveBlending} />
       </mesh>
     </group>
   );
 }
 
-function JarvisThreeScene({ activity, voice }: OrbRefs) {
+function JarvisThreeScene({ activity, voice, moodColor }: OrbRefs) {
   return (
     <>
       <ambientLight intensity={0.35} />
       <pointLight position={[2.5, 2.5, 3.2]} intensity={10} color="#6cf8ff" />
       <pointLight position={[-2.4, -1.6, 2.6]} intensity={5} color="#ffb84d" />
       <group position={[0, 0.05, 0]}>
-        <JarvisStarfield activity={activity} voice={voice} />
-        <JarvisOrbitRings activity={activity} voice={voice} />
-        <JarvisParticleSphere activity={activity} voice={voice} />
-        <JarvisCore activity={activity} voice={voice} />
+        <JarvisStarfield activity={activity} voice={voice} moodColor={moodColor} />
+        <JarvisOrbitRings activity={activity} voice={voice} moodColor={moodColor} />
+        <JarvisParticleSphere activity={activity} voice={voice} moodColor={moodColor} />
+        <JarvisCore activity={activity} voice={voice} moodColor={moodColor} />
       </group>
     </>
   );
 }
 
-export function JarvisWebGLOrb() {
+type JarvisWebGLOrbProps = {
+  /** Manueller Override (0-1). Wenn gesetzt, wird der Store ignoriert. */
+  activityOverride?: number;
+  voiceOverride?: number;
+  /** Performance-Modus: niedrigere DPR, weniger FPS — fuer immer-on Hintergrund. */
+  performanceMode?: boolean;
+  /** Stimmung — beeinflusst Halo/Core/Ring-Farbe (lerp). */
+  mood?: OrbMood;
+};
+
+export function JarvisWebGLOrb({ activityOverride, voiceOverride, performanceMode, mood = 'idle' }: JarvisWebGLOrbProps = {}) {
   const streamState = useAppStore((s) => s.streamState);
   const speechEnabled = useAppStore((s) => s.settings.speechEnabled);
   const wakeWordEnabled = useAppStore((s) => s.settings.wakeWordEnabled);
   const activityRef = useRef(0.55);
   const voiceRef = useRef(0);
+  const moodColorRef = useRef<THREE.Color>(MOOD_COLORS.idle.clone());
 
   useEffect(() => {
+    moodColorRef.current.copy(MOOD_COLORS[mood] ?? MOOD_COLORS.idle);
+  }, [mood]);
+
+  useEffect(() => {
+    if (activityOverride !== undefined) {
+      activityRef.current = activityOverride;
+      return;
+    }
     activityRef.current = streamState.isStreaming ? 1.0 : speechEnabled && wakeWordEnabled ? 0.72 : 0.42;
-  }, [streamState.isStreaming, speechEnabled, wakeWordEnabled]);
+  }, [streamState.isStreaming, speechEnabled, wakeWordEnabled, activityOverride]);
+
+  useEffect(() => {
+    if (voiceOverride !== undefined) {
+      voiceRef.current = voiceOverride;
+    }
+  }, [voiceOverride]);
 
   useEffect(() => {
     const onSpeechState = (event: Event) => {
@@ -287,15 +351,18 @@ export function JarvisWebGLOrb() {
     return () => cancelAnimationFrame(frame);
   }, []);
 
+  // Performance-Mode: niedrigere DPR + frameloop="demand" wenn keine Aktivitaet
+  const dpr: [number, number] = performanceMode ? [1, 1.2] : [1, 1.65];
+
   return (
     <div className="jarvis-reactor jarvis-r3f-reactor">
       <Canvas
         className="jarvis-webgl-orb jarvis-r3f-orb"
         camera={{ position: [0, 0, 6.2], fov: 42, near: 0.1, far: 40 }}
-        dpr={[1, 1.65]}
-        gl={{ alpha: true, antialias: true, powerPreference: 'high-performance' }}
+        dpr={dpr}
+        gl={{ alpha: true, antialias: !performanceMode, powerPreference: performanceMode ? 'low-power' : 'high-performance' }}
       >
-        <JarvisThreeScene activity={activityRef} voice={voiceRef} />
+        <JarvisThreeScene activity={activityRef} voice={voiceRef} moodColor={moodColorRef} />
       </Canvas>
       <div className="jarvis-reactor-ring jarvis-reactor-ring-a" />
       <div className="jarvis-reactor-ring jarvis-reactor-ring-b" />

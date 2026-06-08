@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { Outlet, useNavigate } from 'react-router';
+import { Outlet, useLocation, useNavigate } from 'react-router';
 import { Sidebar } from './Sidebar/Sidebar';
 import { SystemPulse } from './SystemPulse';
 import { JarvisWebGLOrb } from './Chat/JarvisWebGLOrb';
@@ -9,6 +9,9 @@ import { checkHealth } from '../lib/api';
 export function Layout() {
   const sidebarOpen = useAppStore((s) => s.sidebarOpen);
   const [apiReachable, setApiReachable] = useState<boolean | null>(null);
+  const location = useLocation();
+  // JARVIS-Home (default '/') ist transparent — der Rest hat normalen BG.
+  const transparentBg = location.pathname === '/';
 
   useEffect(() => {
     const check = () => checkHealth().then(setApiReachable);
@@ -23,6 +26,16 @@ export function Layout() {
   }, []);
 
   const navigate = useNavigate();
+
+  // Auf Home: fullscreen Orb-Look ohne SystemPulse, ohne Sidebar.
+  // Sonst: normale Sidebar + SystemPulse-Header.
+  if (transparentBg) {
+    return (
+      <div className="h-full w-full overflow-hidden">
+        <Outlet />
+      </div>
+    );
+  }
 
   return (
     <div className="flex flex-col h-full w-full overflow-hidden" style={{ paddingTop: '3px' }}>
@@ -61,7 +74,10 @@ export function Layout() {
             onClick={() => useAppStore.getState().setSidebarOpen(false)}
           />
         )}
-        <main className="relative flex-1 flex flex-col min-w-0 h-full overflow-hidden" style={{ background: 'var(--color-bg)' }}>
+        <main
+          className="relative flex-1 flex flex-col min-w-0 h-full overflow-hidden"
+          style={{ background: 'var(--color-bg)' }}
+        >
           <div className="jarvis-layout-core" aria-hidden="true">
             <JarvisWebGLOrb />
           </div>
