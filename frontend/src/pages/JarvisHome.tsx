@@ -2,6 +2,7 @@ import { useEffect, useState, useRef, useCallback } from 'react';
 import { Mic, Send, Square, Settings as SettingsIcon, History as HistoryIcon, X, Bell, Clock } from 'lucide-react';
 import { useNavigate } from 'react-router';
 import { JarvisWebGLOrb, type OrbMood } from '../components/Chat/JarvisWebGLOrb';
+import { isRemoteClient, getBase, fetchModels, transcribeAudio } from '../lib/api';
 
 const VOICE_LOOP_URL = 'http://127.0.0.1:8770';
 const RESOLVER_URL = 'http://127.0.0.1:8771';
@@ -95,8 +96,27 @@ export function JarvisHome() {
   const [historyOpen, setHistoryOpen] = useState(true);
   const inputRef = useRef<HTMLInputElement | null>(null);
   const historyScrollRef = useRef<HTMLDivElement | null>(null);
+  const REMOTE = isRemoteClient();
+  const [remoteModel, setRemoteModel] = useState('qwen2.5:7b');
+  const [remoteRecording, setRemoteRecording] = useState(false);
+  const remoteRecRef = useRef<MediaRecorder | null>(null);
+  const remoteChunksRef = useRef<Blob[]>([]);
+  const remoteChatRef = useRef<(t: string) => void>(() => {});
+  const toggleRemoteMicRef = useRef<() => void>(() => {});
+  useEffect(() => {
+    if (!REMOTE) return;
+    fetchModels().then((m) => { if (m && m[0]) setRemoteModel(m[0].id); }).catch(() => {});
+  }, [REMOTE]);
 
   const refresh = useCallback(async () => {
+    if (REMOTE) {
+      try {
+        const r = await fetch(`${getBase()}/health`);
+        setReachable(r.ok);
+        setHealth({ ok: true, whisper_ready: true, kokoro_ready: true, pipeline_busy: false });
+      } catch { setReachable(false); }
+      return;
+    }
     try {
       const [hr, cr] = await Promise.all([
         fetch(`${VOICE_LOOP_URL}/health`),
@@ -109,7 +129,7 @@ export function JarvisHome() {
     } catch {
       setReachable(false);
     }
-  }, []);
+  }, [REMOTE]);
 
   useEffect(() => {
     refresh();
@@ -121,6 +141,7 @@ export function JarvisHome() {
   useEffect(() => {
     let cancelled = false;
     const fetchHw = async () => {
+      if (REMOTE) return;
       try {
         const r = await fetch(`${VOICE_LOOP_URL}/hardware`);
         if (!cancelled) setHardware(await r.json());
@@ -145,6 +166,7 @@ export function JarvisHome() {
       'Yes?',
     ];
     const check = async () => {
+      if (REMOTE) return;
       try {
         const r = await fetch(`${VOICE_LOOP_URL}/health`);
         if (!r.ok) return;
@@ -308,6 +330,7 @@ export function JarvisHome() {
   }, [messages.length]);
 
   const triggerWake = async () => {
+    if (REMOTE) { toggleRemoteMicRef.current(); return; }
     setSubmitting(true);
     try { await fetch(`${VOICE_LOOP_URL}/trigger`, { method: 'POST' }); }
     finally { setSubmitting(false); }
@@ -373,7 +396,7 @@ export function JarvisHome() {
       ttsSubTimersRef.current = [];
       setSubtitle('');
 
-      const r = await fetch(`${RESOLVER_URL}/tts?text=${encodeURIComponent(clean)}`);
+      const r = await fetch(`${(REMOTE ? getBase() : RESOLVER_URL)}/tts?text=${encodeURIComponent(clean)}`);
       if (!r.ok) throw new Error('tts http ' + r.status);
       const d = await r.json();
       if (!d.ok || !d.audio_b64) throw new Error(d.reason || 'tts failed');
@@ -808,6 +831,7 @@ export function JarvisHome() {
   };
 
   const sendText = async () => {
+    if (REMOTE) { const q = text.trim(); if (!q || submitting) return; setText(''); remoteChatRef.current(q); inputRef.current?.focus(); return; }
     if (!text.trim() || submitting) return;
     // Beim ersten Send: Notification-Permission ASK (User-Gesture)
     try {
@@ -956,6 +980,83 @@ export function JarvisHome() {
   const allMessages = [...messages, ...clientMessages].sort((a, b) => a.timestamp - b.timestamp);
   const pairs = pairUp(allMessages);
   const lastPair = pairs[pairs.length - 1];
+
+  const remoteChat = async (t: string) => {
+    const q = (t || '').trim();
+    if (!q) return;
+    // Auto-save: explicit "remember/note/save" intent -> POST /v1/memory/store (fire-and-forget)
+    {
+      const mm = q.match(/^(?:remember(?:\s+that)?|note(?:\s+that)?|save|keep in mind|merk(?:\s+dir)?|speichere?|store)[:,]?\s+(.+)/i);
+      if (mm && mm[1]) {
+        fetch(`${getBase()}/v1/memory/store`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ content: mm[1].trim(), tags: ['chat'] }),
+        }).catch(() => {});
+      }
+    }
+    setSubmitting(true);
+    flashMood('thinking', 600);
+    const now = Date.now() / 1000;
+    const baseId = Date.now();
+    const userMsg: ChatMessage = { id: -baseId, role: 'user', content: q, timestamp: now };
+    const histBase = [...clientMessages, userMsg].slice(-20).map((m) => ({ role: m.role, content: m.content }));
+    setClientMessages((prev) => {
+      const next = [...prev, userMsg].slice(-200);
+      try { localStorage.setItem('jarvis_client_messages', JSON.stringify(next)); } catch { /* ignore */ }
+      return next;
+    });
+    try {
+      const res = await fetch(`${getBase()}/v1/chat/completions`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ model: remoteModel, messages: histBase, stream: false }),
+      });
+      if (!res.ok) throw new Error('HTTP ' + res.status);
+      const data = await res.json();
+      const reply = (data && data.choices && data.choices[0] && data.choices[0].message && data.choices[0].message.content) || '(keine Antwort)';
+      const am: ChatMessage = { id: -baseId - 1, role: 'assistant', content: reply, timestamp: now + 0.001 };
+      setClientMessages((prev) => {
+        const next = [...prev, am].slice(-200);
+        try { localStorage.setItem('jarvis_client_messages', JSON.stringify(next)); } catch { /* ignore */ }
+        return next;
+      });
+      flashMood('success', 800);
+      speakViaResolver(reply);
+    } catch (e: unknown) {
+      flashMood('error', 1500);
+      const emsg = e instanceof Error ? e.message : String(e);
+      const am: ChatMessage = { id: -baseId - 1, role: 'assistant', content: 'Fehler: ' + emsg, timestamp: now + 0.002 };
+      setClientMessages((prev) => [...prev, am].slice(-200));
+    } finally {
+      setSubmitting(false);
+    }
+  };
+  remoteChatRef.current = remoteChat;
+  const toggleRemoteMic = async () => {
+    if (remoteRecRef.current && remoteRecording) { remoteRecRef.current.stop(); return; }
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      const mr = new MediaRecorder(stream);
+      remoteChunksRef.current = [];
+      mr.ondataavailable = (e) => { if (e.data.size) remoteChunksRef.current.push(e.data); };
+      mr.onstop = async () => {
+        stream.getTracks().forEach((tr) => tr.stop());
+        setRemoteRecording(false);
+        const mime = mr.mimeType || 'audio/webm';
+        const blob = new Blob(remoteChunksRef.current, { type: mime });
+        try {
+          const ext = mime.includes('ogg') ? 'ogg' : mime.includes('mp4') ? 'mp4' : 'webm';
+          const r = await transcribeAudio(blob, 'rec.' + ext);
+          if (r.text && r.text.trim()) await remoteChat(r.text);
+        } catch { /* ignore */ }
+      };
+      mr.start();
+      remoteRecRef.current = mr;
+      setRemoteRecording(true);
+    } catch { /* ignore */ }
+  };
+  toggleRemoteMicRef.current = toggleRemoteMic;
 
   return (
     <div className="jarvis-home-root">
