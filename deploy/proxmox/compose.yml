@@ -1,0 +1,76 @@
+services:
+  caddy:
+    image: caddy:2-alpine
+    container_name: openjarvis-caddy
+    restart: unless-stopped
+    depends_on:
+      jarvis:
+        condition: service_started
+    ports:
+      - "${CADDY_HTTP_PORT:-8088}:80"
+      - "${CADDY_HTTPS_PORT:-8443}:443"
+    environment:
+      - JARVIS_HOSTNAME=${JARVIS_HOSTNAME:-localhost}
+      - CADDY_EMAIL=${CADDY_EMAIL:-internal@localhost}
+      - OPENJARVIS_API_KEY=${OPENJARVIS_API_KEY:?set OPENJARVIS_API_KEY in .env}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+
+  jarvis:
+    build:
+      context: ../..
+      dockerfile: deploy/docker/Dockerfile
+    container_name: openjarvis-api
+    restart: unless-stopped
+    expose:
+      - "8000"
+    environment:
+      - OPENJARVIS_CONFIG=/root/.openjarvis/config.toml
+      - OPENJARVIS_API_KEY=${OPENJARVIS_API_KEY:?set OPENJARVIS_API_KEY in .env}
+      - OLLAMA_HOST=http://ollama:11434
+      - OPENJARVIS_NUM_CTX=${OPENJARVIS_NUM_CTX:-4096}
+      - OPENJARVIS_OLLAMA_KEEP_ALIVE=${OPENJARVIS_OLLAMA_KEEP_ALIVE:-30m}
+    command:
+      - serve
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8000"
+      - --engine
+      - ollama
+      - --model
+      - ${OPENJARVIS_MODEL:-qwen3.5:4b}
+    volumes:
+      - ${OPENJARVIS_DATA_DIR:-/data/openjarvis}/config:/root/.openjarvis
+      - ${OPENJARVIS_DATA_DIR:-/data/openjarvis}/brain:/brain
+      - ${OPENJARVIS_DATA_DIR:-/data/openjarvis}/logs:/logs
+    depends_on:
+      ollama:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=5)"]
+      interval: 20s
+      timeout: 8s
+      retries: 10
+      start_period: 30s
+
+  ollama:
+    image: ollama/ollama:latest
+    container_name: openjarvis-ollama
+    restart: unless-stopped
+    expose:
+      - "11434"
+    volumes:
+      - ${OLLAMA_DATA_DIR:-/data/ollama}:/root/.ollama
+    healthcheck:
+      test: ["CMD", "ollama", "list"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
+
+volumes:
+  caddy-data:
+  caddy-config:

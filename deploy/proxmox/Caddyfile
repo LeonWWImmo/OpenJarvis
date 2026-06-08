@@ -1,0 +1,17 @@
+{
+	email {$CADDY_EMAIL:internal@localhost}
+}
+
+:80 {
+	reverse_proxy openjarvis-api:8000 {
+		header_up Authorization "Bearer {$OPENJARVIS_API_KEY}"
+		flush_interval -1
+	}
+}
+
+{$JARVIS_HOSTNAME}:443 {
+	reverse_proxy openjarvis-api:8000 {
+		header_up Authorization "Bearer {$OPENJARVIS_API_KEY}"
+		flush_interval -1
+	}
+}

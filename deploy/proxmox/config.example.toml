@@ -1,0 +1,37 @@
+[engine]
+default = "ollama"
+
+[engine.ollama]
+host = "http://ollama:11434"
+
+[intelligence]
+default_model = "qwen3.5:4b"
+
+[server]
+host = "0.0.0.0"
+port = 8000
+model = "qwen3.5:4b"
+agent = "orchestrator"
+cors_origins = ["http://localhost:8088", "http://127.0.0.1:8088"]
+
+[server.auth]
+api_key = ""
+
+[tools.storage]
+default_backend = "sqlite"
+db_path = "/brain/memory.db"
+
+[telemetry]
+enabled = true
+db_path = "/brain/telemetry.db"
+
+[traces]
+enabled = true
+db_path = "/brain/traces.db"
+
+[speech]
+backend = "faster-whisper"
+model = "small"
+device = "cpu"
+compute_type = "int8"
+language = "de"
