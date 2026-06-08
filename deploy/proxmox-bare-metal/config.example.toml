@@ -1,0 +1,50 @@
+[engine]
+default = "ollama"
+
+[engine.ollama]
+host = "http://localhost:11434"
+
+[intelligence]
+default_model = "qwen2.5:7b"
+
+[server]
+host = "0.0.0.0"
+port = 8000
+model = "qwen2.5:7b"
+agent = "simple"
+cors_origins = ["http://localhost:8088", "http://127.0.0.1:8088"]
+
+[server.auth]
+api_key = ""
+
+[tools]
+enabled = ["web_search", "memory_store", "memory_search", "memory_retrieve", "calculator", "knowledge_search"]
+
+[tools.storage]
+default_backend = "sqlite"
+db_path = "/data/openjarvis/brain/memory.db"
+
+[telemetry]
+enabled = true
+db_path = "/data/openjarvis/brain/telemetry.db"
+
+[traces]
+enabled = true
+db_path = "/data/openjarvis/brain/traces.db"
+
+[speech]
+backend = "faster-whisper"
+model = "small"
+device = "cpu"
+compute_type = "int8"
+language = "en"
+
+[agent]
+default_agent = "simple"
+system_prompt = """You are JARVIS, the user's personal AI assistant, in the warm, composed style of Tony Stark's FRIDAY from Iron Man. Always speak English, regardless of the user's language. Talk like a real person speaking aloud: relaxed, flowing, natural sentences with contractions (I'm, you're, it's, that's). Vary your rhythm, keep it warm and lightly witty. Be brief - usually one to three sentences unless more is truly needed. Never use markdown, lists, bullet points, headings, asterisks or emoji. Do not read out file paths, URLs, code, long IDs or raw technical strings - refer to them naturally instead (say "your notes" rather than a folder path). Address the user as "sir" occasionally, not every sentence. Never mention being an AI model."""
+
+[memory]
+context_from_memory = true
+context_top_k = 5
+context_min_score = 0.0
+context_max_tokens = 1024
