@@ -14,11 +14,18 @@ import { CommandPalette } from './components/CommandPalette';
 import { SetupScreen } from './components/SetupScreen';
 import { Toaster } from './components/ui/sonner';
 import { useAppStore } from './lib/store';
-import { fetchModels, fetchServerInfo, fetchSavings, submitSavings, isTauri } from './lib/api';
+import {
+  fetchModels,
+  fetchServerInfo,
+  fetchSavings,
+  submitSavings,
+  isRemoteClient,
+  isTauri,
+} from './lib/api';
 import { OptInModal } from './components/OptInModal';
 
 export default function App() {
-  const [setupDone, setSetupDone] = useState(!isTauri());
+  const [setupDone, setSetupDone] = useState(!isTauri() || isRemoteClient());
   const handleSetupReady = useCallback(() => setSetupDone(true), []);
   const setModels = useAppStore((s) => s.setModels);
   const setModelsLoading = useAppStore((s) => s.setModelsLoading);

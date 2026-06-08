@@ -14,6 +14,7 @@ declare global {
 }
 
 export const isTauri = () => typeof window !== 'undefined' && !!window.__TAURI_INTERNALS__;
+export const isRemoteClient = () => import.meta.env.VITE_REMOTE_CLIENT === 'true';
 
 // Cached API base URL fetched from the Tauri backend at startup.
 // This avoids hardcoding the port — the Rust backend is the single
@@ -55,10 +56,10 @@ const getSettingsApiUrl = (): string => {
 };
 
 export const getBase = (): string => {
-  if (!isTauri() && isLocalDevBrowser()) return '';
   const settingsUrl = getSettingsApiUrl();
   if (settingsUrl) return settingsUrl;
-  if (import.meta.env.VITE_API_URL) return import.meta.env.VITE_API_URL;
+  if (import.meta.env.VITE_API_URL) return import.meta.env.VITE_API_URL.replace(/\/+$/, '');
+  if (!isTauri() && isLocalDevBrowser()) return '';
   if (isTauri()) return _tauriApiBase || DESKTOP_API_FALLBACK;
   return '';
 };
@@ -140,7 +141,7 @@ export async function fetchRecommendedModel(): Promise<{ model: string; reason: 
 export async function pullModel(modelName: string): Promise<void> {
   // In Tauri, go through the Rust backend directly (avoids CORS / timeout
   // issues with long model downloads via fetch).
-  if (isTauri()) {
+  if (isTauri() && !isRemoteClient()) {
     try {
       const { invoke } = await import('@tauri-apps/api/core');
       await invoke('pull_ollama_model', { modelName });
@@ -161,7 +162,7 @@ export async function pullModel(modelName: string): Promise<void> {
 }
 
 export async function deleteModel(modelName: string): Promise<void> {
-  if (isTauri()) {
+  if (isTauri() && !isRemoteClient()) {
     try {
       const { invoke } = await import('@tauri-apps/api/core');
       await invoke('delete_ollama_model', { modelName });
@@ -184,6 +185,10 @@ const _CLOUD_PREFIXES = ['gpt-', 'o1-', 'o3-', 'o4-', 'claude-', 'gemini-', 'ope
 export async function preloadModel(modelName: string): Promise<void> {
   // Cloud models don't need Ollama preloading
   if (_CLOUD_PREFIXES.some(p => modelName.startsWith(p))) {
+    return;
+  }
+  // Remote Ollama loads the model automatically on the first request.
+  if (isRemoteClient() || !getBase().includes('127.0.0.1')) {
     return;
   }
   // Trigger Ollama to load the model into memory (empty prompt, no generation).

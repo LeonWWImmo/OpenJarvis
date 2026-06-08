@@ -39,6 +39,7 @@ Thumbs.db
 # Secrets
 .env
 .env.*
+!frontend/.env.remote.example
 
 # Project
 *.sqlite

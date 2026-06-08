@@ -40,9 +40,8 @@ import {
 function OllamaModelList() {
   const [models, setModels] = useState<Array<{ name: string; size: number }>>([]);
   useEffect(() => {
-    fetch('http://localhost:11434/api/tags')
-      .then(r => r.json())
-      .then(data => setModels((data.models || []).map((m: any) => ({ name: m.name, size: m.size }))))
+    fetchModels()
+      .then(data => setModels(data.map((m) => ({ name: m.id, size: 0 }))))
       .catch(() => setModels([]));
   }, []);
   if (models.length === 0) return <span className="text-xs" style={{ color: 'var(--color-text-tertiary)' }}>No models loaded</span>;
@@ -52,7 +51,7 @@ function OllamaModelList() {
         <span key={m.name} className="flex items-center gap-1 px-2 py-0.5 rounded text-[10px]"
           style={{ background: 'var(--color-bg-tertiary)', color: 'var(--color-text)' }}>
           <span style={{ width: 6, height: 6, borderRadius: '50%', background: '#22c55e', display: 'inline-block' }} />
-          {m.name} ({(m.size / 1e9).toFixed(1)} GB)
+          {m.name}{m.size > 0 ? ` (${(m.size / 1e9).toFixed(1)} GB)` : ''}
         </span>
       ))}
     </div>
@@ -474,12 +473,12 @@ export function SettingsPage() {
                 </span>
               </div>
             </SettingRow>
-            <SettingRow label="API URL" description="Set if backend runs on a different port or host">
+            <SettingRow label="API URL" description="Remote OpenJarvis server, for example http://192.168.1.20:8088">
               <input
                 type="text"
                 value={settings.apiUrl}
                 onChange={(e) => { updateSettings({ apiUrl: e.target.value }); showSaved(); }}
-                placeholder="http://localhost:8000"
+                placeholder="http://SERVER-IP:8088"
                 className="text-sm px-3 py-1.5 rounded-lg outline-none w-56"
                 style={{
                   background: 'var(--color-bg-secondary)',
@@ -492,7 +491,7 @@ export function SettingsPage() {
 
           {/* Self-test */}
           <Section title="Self-test">
-            <SettingRow label="Local assistant check" description="Checks backend, model, Ollama, speech and Obsidian brain">
+            <SettingRow label="Assistant check" description="Checks remote backend and model plus local speech and brain integration">
               <button
                 onClick={handleSelfTest}
                 disabled={selfTestRunning}

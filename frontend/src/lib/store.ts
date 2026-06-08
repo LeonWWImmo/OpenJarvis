@@ -97,7 +97,7 @@ interface Settings {
 function loadSettings(): Settings {
   const defaults: Settings = {
     theme: 'dark',
-    apiUrl: '',
+    apiUrl: import.meta.env.VITE_API_URL || '',
     fontSize: 'default',
     defaultModel: 'qwen3.5:4b',
     defaultAgent: '',

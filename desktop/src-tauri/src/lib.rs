@@ -1857,8 +1857,6 @@ pub fn run() {
     let backend: SharedBackend = Arc::new(Mutex::new(BackendManager::default()));
     let status: SharedStatus = Arc::new(Mutex::new(SetupStatus::default()));
 
-    let boot_backend_ref = backend.clone();
-    let boot_status_ref = status.clone();
     let push_to_talk_shortcut = Shortcut::new(Some(Modifiers::CONTROL | Modifiers::ALT), Code::KeyJ);
     let global_shortcut_plugin = tauri_plugin_global_shortcut::Builder::new()
         .with_shortcut(push_to_talk_shortcut)
@@ -1924,9 +1922,6 @@ pub fn run() {
                     _ => {}
                 })
                 .build(app)?;
-
-            // Auto-start backend services on launch
-            tauri::async_runtime::spawn(boot_backend(boot_backend_ref, boot_status_ref));
 
             Ok(())
         })
