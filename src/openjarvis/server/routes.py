@@ -84,7 +84,13 @@ def _get_jarvis_system_prompt(config: Any | None = None) -> str:
                 configured = ""
 
     if configured:
-        return configured
+        import datetime as _dt
+        _now = _dt.datetime.now().astimezone()
+        return configured + (
+            "\n\nIMPORTANT - the real current date and time is "
+            + _now.strftime("%A, %d %B %Y, %H:%M")
+            + " (" + _now.strftime("%Z") + "). This is authoritative: always use THIS for any date, day, or time question, and ignore any different date or time that may appear earlier in the conversation."
+        )
 
     return (
         "You are Jarvis, a concise local assistant. "
