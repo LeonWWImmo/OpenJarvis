@@ -70,6 +70,29 @@ function pairUp(messages: ChatMessage[]): QAPair[] {
 /**
  * JARVIS-Home — fullscreen 3D-Orb mit Glassmorph-History-Sidebar links.
  */
+function intentUrl(t: string): string | null {
+  const x = (t || '').trim().toLowerCase();
+  const clean = (v: string) => v.replace(/[?.!,]+$/, '').trim();
+  const q = (v: string) => encodeURIComponent(clean(v));
+  let m: RegExpMatchArray | null;
+  if ((m = x.match(/(?:open (?:a |the )?maps? of|maps? of|directions to|navigate to|where is)\s+(.+)/))) return 'https://www.google.com/maps/search/' + q(m[1]);
+  if (/\b(?:open|go to) youtube\b/.test(x)) return 'https://www.youtube.com';
+  if ((m = x.match(/(?:play|search(?: for)?|find)\s+(.+?)\s+on youtube/))) return 'https://www.youtube.com/results?search_query=' + q(m[1]);
+  if ((m = x.match(/youtube (?:search (?:for )?|for )?(.+)/))) return 'https://www.youtube.com/results?search_query=' + q(m[1]);
+  if ((m = x.match(/^play\s+(.+?)(?:\s+on (?:youtube )?music)?$/))) return 'https://music.youtube.com/search?q=' + q(m[1]);
+  if (/\bopen spotify\b/.test(x)) return 'https://open.spotify.com';
+  if ((m = x.match(/(?:on )?spotify\s+(?:play |search (?:for )?)?(.+)/))) return 'https://open.spotify.com/search/' + q(m[1]);
+  if ((m = x.match(/search github (?:for )?(.+)/))) return 'https://github.com/search?q=' + q(m[1]) + '&type=repositories';
+  if ((m = x.match(/(?:wikipedia|wiki)(?: page)?(?: (?:of|for|about|on))?\s+(.+)/))) return 'https://en.wikipedia.org/w/index.php?search=' + q(m[1]);
+  if ((m = x.match(/translate\s+(.+?)\s+(?:in)?to\s+(.+)/))) return 'https://www.google.com/search?q=' + q('translate ' + m[1] + ' to ' + m[2]);
+  if ((m = x.match(/(?:weather)(?:\s+(?:in|for|at)\s+(.+))?/))) return 'https://www.google.com/search?q=' + q('weather ' + (m[1] || ''));
+  if ((m = x.match(/(?:search amazon for|on amazon|buy|order)\s+(.+)/))) return 'https://www.amazon.com/s?k=' + q(m[1]);
+  if ((m = x.match(/open\s+(https?:\/\/\S+)/))) return clean(m[1]);
+  if ((m = x.match(/(?:open|go to)\s+([a-z0-9-]+\.[a-z]{2,}(?:\/\S*)?)/))) return 'https://' + clean(m[1]);
+  if ((m = x.match(/(?:google|search(?: for)?|look up|web search)\s+(.+)/))) return 'https://www.google.com/search?q=' + q(m[1]);
+  return null;
+}
+
 export function JarvisHome() {
   const navigate = useNavigate();
   const [health, setHealth] = useState<Health | null>(null);
@@ -103,9 +126,80 @@ export function JarvisHome() {
   const remoteChunksRef = useRef<Blob[]>([]);
   const remoteChatRef = useRef<(t: string) => void>(() => {});
   const toggleRemoteMicRef = useRef<() => void>(() => {});
+  const [wakeOn, setWakeOn] = useState(false);
+  const [wakeStatus, setWakeStatus] = useState('');
+  const [deepMode, setDeepMode] = useState(() => { try { return localStorage.getItem('jarvis_deep') === 'on'; } catch { return false; } });
+  const [srvTimers, setSrvTimers] = useState<{ id: number; fire: number; label: string; kind: string }[]>([]);
+  const [nowSec, setNowSec] = useState(() => Date.now() / 1000);
+  const [srvNotes, setSrvNotes] = useState<{ id: number; text: string }[]>([]);
+  const [timerInput, setTimerInput] = useState('');
+  const [weatherCard, setWeatherCard] = useState<any>(null);
+  const wxDismissed = useRef(0);
+  const [briefingCard, setBriefingCard] = useState<any>(null);
+  const brDismissed = useRef(0);
+  const wxEmoji = (c: number) => {
+    if (c === 0) return '☀️';
+    if (c <= 2) return '🌤️';
+    if (c === 3) return '☁️';
+    if (c <= 48) return '🌫️';
+    if (c <= 57) return '🌦️';
+    if (c <= 67) return '🌧️';
+    if (c <= 77) return '❄️';
+    if (c <= 82) return '🌧️';
+    if (c <= 86) return '❄️';
+    return '⛈️';
+  };
+  const wxGradient = (c: number) => {
+    if (c === 0 || c <= 2) return 'linear-gradient(135deg,#2980b9,#6dd5fa)';
+    if (c === 3 || c <= 48) return 'linear-gradient(135deg,#485563,#29323c)';
+    if (c <= 67 || (c >= 80 && c <= 82)) return 'linear-gradient(135deg,#3a6073,#16222a)';
+    if ((c >= 71 && c <= 77) || c >= 85) return 'linear-gradient(135deg,#83a4d4,#b6fbff)';
+    return 'linear-gradient(135deg,#373b44,#4286f4)';
+  };
+  const wakeWsRef = useRef<WebSocket | null>(null);
+  const wakeCtxRef = useRef<AudioContext | null>(null);
+  const wakeStreamRef = useRef<MediaStream | null>(null);
+  const wakeNodeRef = useRef<AudioWorkletNode | null>(null);
+  const wakeBusyRef = useRef(false);
+  const wakeToggleRef = useRef<() => void>(() => {});
+  const [pendingLink, setPendingLink] = useState<{ url: string; label: string } | null>(null);
+  const justOpenedRef = useRef('');
   useEffect(() => {
     if (!REMOTE) return;
     fetchModels().then((m) => { if (m && m[0]) setRemoteModel(m[0].id); }).catch(() => {});
+    setClientMessages([]);
+    try { localStorage.removeItem('jarvis_client_messages'); } catch { /* ignore */ }
+  }, [REMOTE]);
+
+  useEffect(() => {
+    if (!REMOTE) return;
+    const fetchTimers = async () => {
+      try {
+        const r = await fetch(`${getBase()}/timers`);
+        const d = await r.json();
+        setSrvTimers(d.timers || []);
+        const rn = await fetch(`${getBase()}/notes`);
+        const dn = await rn.json();
+        setSrvNotes(dn.notes || []);
+        const rw = await fetch(`${getBase()}/weather`);
+        const dw = await rw.json();
+        if (dw && dw.ts && dw.ts > Date.now() / 1000 - 25 && dw.ts !== wxDismissed.current) {
+          setWeatherCard(dw);
+        } else if (!dw || !dw.ts || dw.ts <= Date.now() / 1000 - 25) {
+          setWeatherCard(null);
+        }
+        const rb = await fetch(`${getBase()}/briefing`);
+        const db = await rb.json();
+        if (db && db.ts && db.ts > Date.now() / 1000 - 30 && db.ts !== brDismissed.current) {
+          setBriefingCard(db);
+        } else if (!db || !db.ts || db.ts <= Date.now() / 1000 - 30) {
+          setBriefingCard(null);
+        }
+      } catch { /* ignore */ }
+    };
+    fetchTimers();
+    const id = setInterval(() => { setNowSec(Date.now() / 1000); fetchTimers(); }, 1000);
+    return () => clearInterval(id);
   }, [REMOTE]);
 
   const refresh = useCallback(async () => {
@@ -114,6 +208,9 @@ export function JarvisHome() {
         const r = await fetch(`${getBase()}/health`);
         setReachable(r.ok);
         setHealth({ ok: true, whisper_ready: true, kokoro_ready: true, pipeline_busy: false });
+        const cr = await fetch(`${getBase()}/chat_log?after=0`);
+        const cd = await cr.json();
+        setMessages((cd.messages || []).map((mm: { id: number; role: string; content: string; timestamp: number }) => ({ id: mm.id, role: mm.role as 'user' | 'assistant', content: mm.content, timestamp: mm.timestamp })));
       } catch { setReachable(false); }
       return;
     }
@@ -831,7 +928,7 @@ export function JarvisHome() {
   };
 
   const sendText = async () => {
-    if (REMOTE) { const q = text.trim(); if (!q || submitting) return; setText(''); remoteChatRef.current(q); inputRef.current?.focus(); return; }
+    if (REMOTE) { const q = text.trim(); if (!q || submitting) return; setText(''); const _u = intentUrl(q); if (_u) { window.open(_u, '_blank'); justOpenedRef.current = _u; } remoteChatRef.current(q); inputRef.current?.focus(); return; }
     if (!text.trim() || submitting) return;
     // Beim ersten Send: Notification-Permission ASK (User-Gesture)
     try {
@@ -984,6 +1081,13 @@ export function JarvisHome() {
   const remoteChat = async (t: string) => {
     const q = (t || '').trim();
     if (!q) return;
+    {
+      const u = intentUrl(q);
+      if (u) {
+        if (justOpenedRef.current === u) { justOpenedRef.current = ''; }
+        else { const w = window.open(u, '_blank'); if (!w) setPendingLink({ url: u, label: q }); }
+      }
+    }
     // Auto-save: explicit "remember/note/save" intent -> POST /v1/memory/store (fire-and-forget)
     {
       const mm = q.match(/^(?:remember(?:\s+that)?|note(?:\s+that)?|save|keep in mind|merk(?:\s+dir)?|speichere?|store)[:,]?\s+(.+)/i);
@@ -997,37 +1101,35 @@ export function JarvisHome() {
     }
     setSubmitting(true);
     flashMood('thinking', 600);
-    const now = Date.now() / 1000;
-    const baseId = Date.now();
-    const userMsg: ChatMessage = { id: -baseId, role: 'user', content: q, timestamp: now };
-    const histBase = [...clientMessages, userMsg].slice(-20).map((m) => ({ role: m.role, content: m.content }));
-    setClientMessages((prev) => {
-      const next = [...prev, userMsg].slice(-200);
-      try { localStorage.setItem('jarvis_client_messages', JSON.stringify(next)); } catch { /* ignore */ }
-      return next;
-    });
     try {
+      await fetch(`${getBase()}/chat_log`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ role: 'user', content: q, source: 'web' }),
+      }).catch(() => {});
+      let hist: { role: string; content: string }[] = [];
+      try {
+        const lr = await fetch(`${getBase()}/chat_log`);
+        const ld = await lr.json();
+        hist = (ld.messages || []).slice(-12).map((mm: { role: string; content: string }) => ({ role: mm.role, content: mm.content }));
+      } catch { /* ignore */ }
+      if (!hist.length) hist = [{ role: 'user', content: q }];
       const res = await fetch(`${getBase()}/v1/chat/completions`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ model: remoteModel, messages: histBase, stream: false }),
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ model: deepMode ? 'qwen2.5:14b-instruct-q4_K_M' : 'qwen2.5:7b', messages: hist, stream: false }),
       });
       if (!res.ok) throw new Error('HTTP ' + res.status);
       const data = await res.json();
-      const reply = (data && data.choices && data.choices[0] && data.choices[0].message && data.choices[0].message.content) || '(keine Antwort)';
-      const am: ChatMessage = { id: -baseId - 1, role: 'assistant', content: reply, timestamp: now + 0.001 };
-      setClientMessages((prev) => {
-        const next = [...prev, am].slice(-200);
-        try { localStorage.setItem('jarvis_client_messages', JSON.stringify(next)); } catch { /* ignore */ }
-        return next;
-      });
+      const reply = (data && data.choices && data.choices[0] && data.choices[0].message && data.choices[0].message.content) || '(no reply)';
+      await fetch(`${getBase()}/chat_log`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ role: 'assistant', content: reply, source: 'web' }),
+      }).catch(() => {});
       flashMood('success', 800);
       speakViaResolver(reply);
     } catch (e: unknown) {
       flashMood('error', 1500);
       const emsg = e instanceof Error ? e.message : String(e);
-      const am: ChatMessage = { id: -baseId - 1, role: 'assistant', content: 'Fehler: ' + emsg, timestamp: now + 0.002 };
-      setClientMessages((prev) => [...prev, am].slice(-200));
+      speakViaResolver('Error: ' + emsg);
     } finally {
       setSubmitting(false);
     }
@@ -1058,9 +1160,246 @@ export function JarvisHome() {
   };
   toggleRemoteMicRef.current = toggleRemoteMic;
 
+  // ===== Wake word: "hey jarvis" via server openWakeWord over WebSocket =====
+  const captureCommand = async () => {
+    setWakeStatus('Listening...');
+    let stream: MediaStream | null = null;
+    let actx: AudioContext | null = null;
+    try {
+      stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      const mr = new MediaRecorder(stream);
+      const chunks: Blob[] = [];
+      mr.ondataavailable = (e) => { if (e.data.size) chunks.push(e.data); };
+      actx = new AudioContext();
+      const src = actx.createMediaStreamSource(stream);
+      const an = actx.createAnalyser();
+      an.fftSize = 512;
+      src.connect(an);
+      const tdata = new Uint8Array(an.fftSize);
+      const SIL_END_MS = 2000;     // trailing silence (after speech) to finish
+      const MAX_MS = 30000;        // hard cap
+      const NOSPEECH_MS = 8000;    // give up if user never speaks
+      const MIN_SPEECH_MS = 250;
+      const startT = Date.now();
+      let noiseFloor = 0, calibN = 0;
+      let speaking = false, speechStart = 0, lastVoice = startT;
+      await new Promise<void>((resolve) => {
+        mr.onstop = () => resolve();
+        mr.start();
+        const tick = () => {
+          an.getByteTimeDomainData(tdata);
+          let sum = 0;
+          for (let i = 0; i < tdata.length; i++) { const d = (tdata[i] - 128) / 128; sum += d * d; }
+          const rms = Math.sqrt(sum / tdata.length);
+          const now = Date.now();
+          const el = now - startT;
+          if (el < 400) { noiseFloor = (noiseFloor * calibN + rms) / (calibN + 1); calibN++; setTimeout(tick, 50); return; }
+          const thr = Math.max(0.015, noiseFloor * 2.2 + 0.008);
+          if (rms > thr) { lastVoice = now; if (!speaking) { speaking = true; speechStart = now; setWakeStatus('Listening...'); } }
+          const trailing = now - lastVoice;
+          const spoke = speaking && (now - speechStart > MIN_SPEECH_MS);
+          if (el > MAX_MS || (!speaking && el > NOSPEECH_MS) || (spoke && trailing > SIL_END_MS)) { try { mr.stop(); } catch { /* */ } return; }
+          setTimeout(tick, 50);
+        };
+        setTimeout(tick, 50);
+      });
+      const mime = mr.mimeType || 'audio/webm';
+      const blob = new Blob(chunks, { type: mime });
+      setWakeStatus('Thinking...');
+      const ext = mime.includes('ogg') ? 'ogg' : 'webm';
+      const r = await transcribeAudio(blob, 'cmd.' + ext);
+      if (r.text && r.text.trim()) await remoteChat(r.text);
+    } catch { /* */ } finally {
+      if (stream) stream.getTracks().forEach((t) => t.stop());
+      if (actx) { try { await actx.close(); } catch { /* */ } }
+      setWakeStatus(wakeOn ? 'Say "Hey Jarvis"' : '');
+    }
+  };
+
+  const onWakeDetected = async () => {
+    if (wakeBusyRef.current) return;
+    wakeBusyRef.current = true;
+    flashMood('success', 600);
+    setWakeStatus('Yes, sir?');
+    try { await captureCommand(); } catch { /* */ }
+    wakeBusyRef.current = false;
+  };
+
+  const startWake = async () => {
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true } });
+      wakeStreamRef.current = stream;
+      const ACtx = window.AudioContext || (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
+      const actx = new ACtx({ sampleRate: 16000 });
+      wakeCtxRef.current = actx;
+      const code = [
+        'class PCMW extends AudioWorkletProcessor {',
+        '  process(inputs){ const ch=inputs[0][0]; if(ch){ const b=new Int16Array(ch.length); for(let i=0;i<ch.length;i++){ let s=Math.max(-1,Math.min(1,ch[i])); b[i]= s<0? s*0x8000 : s*0x7FFF; } this.port.postMessage(b,[b.buffer]); } return true; }',
+        '}',
+        'registerProcessor("pcmw", PCMW);'
+      ].join('\n');
+      const url = URL.createObjectURL(new Blob([code], { type: 'application/javascript' }));
+      await actx.audioWorklet.addModule(url);
+      const node = new AudioWorkletNode(actx, 'pcmw');
+      wakeNodeRef.current = node;
+      const wsUrl = getBase().replace(/^http/, 'ws') + '/wake';
+      const ws = new WebSocket(wsUrl);
+      ws.binaryType = 'arraybuffer';
+      wakeWsRef.current = ws;
+      ws.onmessage = (ev) => {
+        try { const m = JSON.parse(ev.data); if (m && m.wake) onWakeDetected(); } catch { /* */ }
+      };
+      node.port.onmessage = (e) => {
+        const speaking = !!(ttsAudioRef.current && !ttsAudioRef.current.paused && !ttsAudioRef.current.ended);
+        if (ws.readyState === 1 && !wakeBusyRef.current && !speaking) { ws.send(e.data); }
+      };
+      const msrc = actx.createMediaStreamSource(stream);
+      msrc.connect(node);
+      node.connect(actx.destination);
+      setWakeOn(true);
+      setWakeStatus('Say "Hey Jarvis"');
+    } catch { setWakeStatus('Mic error'); }
+  };
+
+  const stopWake = () => {
+    try { wakeWsRef.current?.close(); } catch { /* */ }
+    try { wakeNodeRef.current?.disconnect(); } catch { /* */ }
+    try { wakeStreamRef.current?.getTracks().forEach((t) => t.stop()); } catch { /* */ }
+    try { wakeCtxRef.current?.close(); } catch { /* */ }
+    wakeWsRef.current = null; wakeNodeRef.current = null; wakeStreamRef.current = null; wakeCtxRef.current = null;
+    setWakeOn(false); setWakeStatus('');
+  };
+
+  wakeToggleRef.current = () => { if (wakeOn) { try { localStorage.setItem('jarvis_wake', 'off'); } catch { /* */ } stopWake(); } else { try { localStorage.setItem('jarvis_wake', 'on'); } catch { /* */ } startWake(); } };
+
+  useEffect(() => {
+    if (!REMOTE) return;
+    try { if (localStorage.getItem('jarvis_wake') === 'off') return; } catch { /* */ }
+    let done = false;
+    const tryStart = () => { if (done) return; done = true; document.removeEventListener('pointerdown', tryStart); startWake(); };
+    navigator.mediaDevices?.getUserMedia({ audio: true })
+      .then((s) => { s.getTracks().forEach((t) => t.stop()); tryStart(); })
+      .catch(() => { document.addEventListener('pointerdown', tryStart, { once: true }); });
+    return () => document.removeEventListener('pointerdown', tryStart);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   return (
     <div className="jarvis-home-root">
       <style>{homeStyles}</style>
+      {REMOTE && (
+        <button onClick={() => wakeToggleRef.current()} title="Wake word"
+          style={{ position: 'absolute', top: 64, right: 16, zIndex: 50, padding: '6px 12px', borderRadius: 20, border: 'none', cursor: 'pointer', background: wakeOn ? '#16a34a' : '#3f3f46', color: '#fff', fontSize: 12, whiteSpace: 'nowrap' }}>
+          {wakeOn ? 'Hey Jarvis: ON' : 'Wake: OFF'}{wakeStatus ? ' - ' + wakeStatus : ''}
+        </button>
+      )}
+      {REMOTE && (
+        <button onClick={() => { const nv = !deepMode; setDeepMode(nv); try { localStorage.setItem('jarvis_deep', nv ? 'on' : 'off'); } catch { /* */ } }}
+          title="Deep mode: 14B model (smarter, slower)"
+          style={{ position: 'absolute', top: 100, right: 16, zIndex: 50, padding: '6px 12px', borderRadius: 20, border: 'none', cursor: 'pointer', background: deepMode ? '#7c3aed' : '#3f3f46', color: '#fff', fontSize: 12, whiteSpace: 'nowrap' }}>
+          {deepMode ? 'Deep: 14B' : 'Deep: off'}
+        </button>
+      )}
+      {REMOTE && (
+        <div style={{ position: 'absolute', top: 140, right: 16, zIndex: 40, width: 230, display: 'flex', flexDirection: 'column', gap: 8 }}>
+          <div style={{ display: 'flex', gap: 4 }}>
+            <input value={timerInput} onChange={(e) => setTimerInput(e.target.value)}
+              onKeyDown={(e) => { if (e.key === 'Enter') { const m = parseFloat(timerInput); if (m > 0) { fetch(getBase() + '/timers', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ fire: Date.now() / 1000 + m * 60, label: '', kind: 'timer' }) }).then(() => setTimerInput('')).catch(() => {}); } } }}
+              placeholder="min" inputMode="decimal"
+              style={{ width: 70, padding: '6px 8px', borderRadius: 8, border: '1px solid #2a2a2e', background: 'rgba(24,24,28,0.92)', color: '#e7e7ea', fontSize: 13 }} />
+            <button onClick={() => { const m = parseFloat(timerInput); if (m > 0) { fetch(getBase() + '/timers', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ fire: Date.now() / 1000 + m * 60, label: '', kind: 'timer' }) }).then(() => setTimerInput('')).catch(() => {}); } }}
+              style={{ flex: 1, padding: '6px 8px', borderRadius: 8, border: 'none', cursor: 'pointer', background: '#2563eb', color: '#fff', fontSize: 12 }}>+ Timer</button>
+          </div>
+          {srvTimers.map((t) => {
+            const rem = Math.max(0, Math.floor(t.fire - nowSec));
+            const hh = Math.floor(rem / 3600), mm = Math.floor((rem % 3600) / 60), ss = rem % 60;
+            const disp = hh > 0 ? `${hh}:${String(mm).padStart(2, '0')}:${String(ss).padStart(2, '0')}` : `${mm}:${String(ss).padStart(2, '0')}`;
+            const icon = t.kind === 'alarm' ? '⏰' : t.kind === 'reminder' ? '📝' : '⏱️';
+            return (
+              <div key={t.id} style={{ position: 'relative', background: 'rgba(24,24,28,0.92)', border: '1px solid #2a2a2e', borderRadius: 12, padding: '8px 12px', color: '#e7e7ea', boxShadow: '0 2px 10px rgba(0,0,0,0.3)' }}>
+                <button onClick={() => { fetch(getBase() + '/timers/' + t.id, { method: 'DELETE' }).then(() => setSrvTimers((s) => s.filter((z) => z.id !== t.id))).catch(() => {}); }}
+                  title="Delete" style={{ position: 'absolute', top: 4, right: 6, background: 'transparent', border: 'none', color: '#9a9aa0', cursor: 'pointer', fontSize: 16, lineHeight: 1, padding: 0 }}>×</button>
+                <div style={{ fontSize: 11, opacity: 0.65, textTransform: 'capitalize', paddingRight: 16 }}>{icon} {t.kind}{t.label ? ' · ' + t.label : ''}</div>
+                <div style={{ fontSize: 22, fontWeight: 600, fontVariantNumeric: 'tabular-nums', color: rem <= 10 ? '#f87171' : '#fff' }}>{disp}</div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+      {REMOTE && srvNotes.length > 0 && (
+        <div style={{ position: 'absolute', bottom: 16, right: 16, zIndex: 40, width: 230, display: 'flex', flexDirection: 'column', gap: 6, maxHeight: '40vh', overflowY: 'auto' }}>
+          <div style={{ fontSize: 11, opacity: 0.6, color: '#e7e7ea', paddingLeft: 4 }}>NOTES</div>
+          {srvNotes.map((n) => (
+            <div key={n.id} style={{ position: 'relative', background: 'rgba(24,24,28,0.92)', border: '1px solid #2a2a2e', borderRadius: 12, padding: '8px 12px', color: '#e7e7ea', boxShadow: '0 2px 10px rgba(0,0,0,0.3)' }}>
+              <button onClick={() => { fetch(getBase() + '/notes/' + n.id, { method: 'DELETE' }).then(() => setSrvNotes((sx) => sx.filter((z) => z.id !== n.id))).catch(() => {}); }}
+                title="Delete" style={{ position: 'absolute', top: 4, right: 6, background: 'transparent', border: 'none', color: '#9a9aa0', cursor: 'pointer', fontSize: 16, lineHeight: 1, padding: 0 }}>×</button>
+              <div style={{ fontSize: 13, paddingRight: 16, whiteSpace: 'pre-wrap' }}>{n.text}</div>
+            </div>
+          ))}
+        </div>
+      )}
+      {REMOTE && weatherCard && weatherCard.current && (
+        <div onClick={() => { wxDismissed.current = weatherCard.ts; setWeatherCard(null); }}
+          style={{ position: 'absolute', inset: 0, zIndex: 80, display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'rgba(0,0,0,0.45)', backdropFilter: 'blur(4px)' }}>
+          <div style={{ width: 'min(92vw, 560px)', borderRadius: 24, padding: 24, color: '#fff', boxShadow: '0 20px 60px rgba(0,0,0,0.5)', background: wxGradient(weatherCard.current.code) }}>
+            <div style={{ fontSize: 13, opacity: 0.85 }}>{weatherCard.location}</div>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 14, marginTop: 4 }}>
+              <div style={{ fontSize: 64, lineHeight: 1 }}>{wxEmoji(weatherCard.current.code)}</div>
+              <div>
+                <div style={{ fontSize: 48, fontWeight: 700, lineHeight: 1 }}>{weatherCard.current.temp}°</div>
+                <div style={{ fontSize: 13, opacity: 0.9, textTransform: 'capitalize' }}>{weatherCard.current.desc}</div>
+              </div>
+            </div>
+            <div style={{ display: 'flex', gap: 8, marginTop: 18, overflowX: 'auto', paddingBottom: 4 }}>
+              {(weatherCard.days || []).map((d: any, idx: number) => (
+                <div key={idx} style={{ flex: '0 0 auto', minWidth: 86, background: 'rgba(255,255,255,0.15)', borderRadius: 16, padding: '12px 8px', textAlign: 'center' }}>
+                  <div style={{ fontSize: 12, opacity: 0.85 }}>{d.label || d.weekday}</div>
+                  <div style={{ fontSize: 28, margin: '4px 0' }}>{wxEmoji(d.code)}</div>
+                  <div style={{ fontSize: 11, textTransform: 'capitalize', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{d.desc}</div>
+                  <div style={{ fontSize: 14, fontWeight: 600, marginTop: 4 }}>{d.max}° / {d.min}°</div>
+                  <div style={{ fontSize: 12, opacity: 0.85 }}>💧 {d.precip ?? 0}%</div>
+                </div>
+              ))}
+            </div>
+            <div style={{ fontSize: 11, opacity: 0.7, textAlign: 'center', marginTop: 14 }}>tap to close</div>
+          </div>
+        </div>
+      )}
+      {REMOTE && briefingCard && briefingCard.greeting && (
+        <div onClick={() => { brDismissed.current = briefingCard.ts; setBriefingCard(null); }}
+          style={{ position: 'absolute', inset: 0, zIndex: 81, display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'rgba(0,0,0,0.5)', backdropFilter: 'blur(5px)' }}>
+          <div style={{ width: 'min(92vw, 440px)', borderRadius: 24, padding: 26, color: '#fff', boxShadow: '0 20px 60px rgba(0,0,0,0.55)', background: briefingCard.weather ? wxGradient(briefingCard.weather.code) : 'linear-gradient(135deg,#232526,#414345)' }}>
+            <div style={{ fontSize: 26, fontWeight: 700 }}>{briefingCard.greeting}</div>
+            <div style={{ fontSize: 13, opacity: 0.85, marginTop: 2 }}>{briefingCard.date} · {briefingCard.time}</div>
+            {briefingCard.weather && (
+              <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginTop: 16 }}>
+                <div style={{ fontSize: 46 }}>{wxEmoji(briefingCard.weather.code)}</div>
+                <div>
+                  <div style={{ fontSize: 30, fontWeight: 700, lineHeight: 1 }}>{briefingCard.weather.temp}°</div>
+                  <div style={{ fontSize: 12, opacity: 0.9, textTransform: 'capitalize' }}>{briefingCard.weather.desc} · {briefingCard.weather.max}° / {briefingCard.weather.min}°</div>
+                </div>
+              </div>
+            )}
+            <div style={{ marginTop: 18 }}>
+              <div style={{ fontSize: 11, opacity: 0.7, marginBottom: 6, letterSpacing: 1 }}>SCHEDULE</div>
+              {(briefingCard.items && briefingCard.items.length > 0) ? briefingCard.items.map((it: any, idx: number) => (
+                <div key={idx} style={{ display: 'flex', gap: 8, alignItems: 'center', background: 'rgba(255,255,255,0.13)', borderRadius: 12, padding: '8px 12px', marginBottom: 6 }}>
+                  <span style={{ fontSize: 18 }}>{it.kind === 'alarm' ? '⏰' : it.kind === 'reminder' ? '📝' : '⏱️'}</span>
+                  <span style={{ fontSize: 14, flex: 1, textTransform: 'capitalize' }}>{it.label || it.kind}</span>
+                  <span style={{ fontSize: 12, opacity: 0.85 }}>{it.when}</span>
+                </div>
+              )) : <div style={{ fontSize: 13, opacity: 0.7 }}>Nothing scheduled.</div>}
+            </div>
+            <div style={{ fontSize: 11, opacity: 0.6, textAlign: 'center', marginTop: 14 }}>tap to close</div>
+          </div>
+        </div>
+      )}
+      {pendingLink && (
+        <button onClick={() => { window.open(pendingLink.url, '_blank'); setPendingLink(null); }} title={pendingLink.url}
+          style={{ position: 'absolute', top: 12, left: '50%', transform: 'translateX(-50%)', zIndex: 60, padding: '8px 18px', borderRadius: 22, border: 'none', cursor: 'pointer', background: '#2563eb', color: '#fff', fontSize: 13 }}>
+          Open link
+        </button>
+      )}
 
       {/* Linke History-Sidebar */}
       <aside className={`jarvis-history ${historyOpen ? 'open' : 'closed'}`}>
