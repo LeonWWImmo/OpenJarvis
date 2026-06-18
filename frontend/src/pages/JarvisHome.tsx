@@ -1,5 +1,5 @@
 import { useEffect, useState, useRef, useCallback } from 'react';
-import { Mic, Send, Square, Settings as SettingsIcon, History as HistoryIcon, X, Bell, Clock } from 'lucide-react';
+import { Mic, Send, Square, Settings as SettingsIcon, History as HistoryIcon, X, Bell, Clock, Camera, Brain, HelpCircle } from 'lucide-react';
 import { useNavigate } from 'react-router';
 import { JarvisWebGLOrb, type OrbMood } from '../components/Chat/JarvisWebGLOrb';
 import { isRemoteClient, getBase, fetchModels, transcribeAudio } from '../lib/api';
@@ -137,6 +137,27 @@ export function JarvisHome() {
   const wxDismissed = useRef(0);
   const [briefingCard, setBriefingCard] = useState<any>(null);
   const brDismissed = useRef(0);
+  const [news, setNews] = useState<any[]>([]);
+  const [healthCard, setHealthCard] = useState<any>(null);
+  const hcDismissed = useRef(0);
+  const [financeCard, setFinanceCard] = useState<any>(null);
+  const fcDismissed = useRef(0);
+  const [fileMatches, setFileMatches] = useState<any>(null);
+  const fmDismissed = useRef(0);
+  const [srvStatus, setSrvStatus] = useState<any>({ state: 'idle', level: 0, heard: '', playing: '' });
+  const [srvMemory, setSrvMemory] = useState<{ id: number; text: string }[]>([]);
+  const [noteInput, setNoteInput] = useState('');
+  const [memInput, setMemInput] = useState('');
+  const [showCheats, setShowCheats] = useState(false);
+  const [showMem, setShowMem] = useState(false);
+  const [boot, setBoot] = useState(() => { try { return !sessionStorage.getItem('jarvis_booted'); } catch { return true; } });
+  const [srvSys, setSrvSys] = useState<any>(null);
+  const [hudPos, setHudPos] = useState(() => { try { return JSON.parse(localStorage.getItem('jarvis_hudpos') || '') || { x: 14, y: 14 }; } catch { return { x: 14, y: 14 }; } });
+  const sendUi = (cmd: string) => { fetch(getBase() + '/uicommand', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ cmd }) }).catch(() => {}); };
+  const stColor = (st: string) => st === 'listening' ? '#16a34a' : st === 'thinking' ? '#eab308' : st === 'speaking' ? 'rgba(34, 211, 238, 0.85)' : '#6b7280';
+  const stLabel = (st: string) => st === 'listening' ? 'Listening' : st === 'thinking' ? 'Thinking' : st === 'speaking' ? 'Speaking' : 'Idle';
+  const qBtn: any = { width: 40, height: 40, borderRadius: 12, border: '1px solid rgba(125, 249, 255, 0.18)', background: 'rgba(10, 25, 47, 0.62)', color: 'rgba(220, 240, 255, 0.95)', cursor: 'pointer', fontSize: 17, display: 'flex', alignItems: 'center', justifyContent: 'center' };
+  const inStyle: any = { padding: '7px 10px', borderRadius: 10, border: '1px solid rgba(125, 249, 255, 0.18)', background: 'rgba(10, 25, 47, 0.62)', color: 'rgba(220, 240, 255, 0.95)', fontSize: 13, outline: 'none' };
   const wxEmoji = (c: number) => {
     if (c === 0) return '☀️';
     if (c <= 2) return '🌤️';
@@ -156,6 +177,50 @@ export function JarvisHome() {
     if ((c >= 71 && c <= 77) || c >= 85) return 'linear-gradient(135deg,#83a4d4,#b6fbff)';
     return 'linear-gradient(135deg,#373b44,#4286f4)';
   };
+  const briefRing = (value: number, label: string, max = 21) => {
+    const r = 26, circ = 2 * Math.PI * r, pct = Math.max(0, Math.min(1, value / max)), off = circ * (1 - pct);
+    const col = pct > 0.66 ? '#ff7a59' : pct > 0.4 ? '#7df9ff' : '#34d399';
+    return (
+      <div style={{ textAlign: 'center', width: 74 }}>
+        <svg width="62" height="62" viewBox="0 0 62 62">
+          <circle cx="31" cy="31" r="26" fill="none" stroke="rgba(125,249,255,0.12)" strokeWidth="5" />
+          <circle cx="31" cy="31" r="26" fill="none" stroke={col} strokeWidth="5" strokeLinecap="round" strokeDasharray={circ} strokeDashoffset={off} transform="rotate(-90 31 31)" style={{ filter: `drop-shadow(0 0 5px ${col})`, transition: 'stroke-dashoffset 1.1s cubic-bezier(.2,.9,.3,1)' }} />
+          <text x="31" y="33" textAnchor="middle" dominantBaseline="middle" fill="#eaffff" fontSize="15" fontWeight="700" fontFamily="ui-monospace, monospace">{value}</text>
+        </svg>
+        <div style={{ fontSize: 9, opacity: 0.72, fontFamily: 'ui-monospace, monospace', letterSpacing: 0.5, marginTop: 1, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{label}</div>
+      </div>
+    );
+  };
+  const hudLabel = (txt: string) => (
+    <div style={{ display: 'flex', alignItems: 'center', gap: 9, fontFamily: 'ui-monospace, monospace', fontSize: 10, letterSpacing: 2, opacity: 0.68, marginBottom: 10 }}><span style={{ width: 12, height: 1, background: 'rgba(125,249,255,0.7)' }} />{txt}<span style={{ flex: 1, height: 1, background: 'rgba(125,249,255,0.12)' }} /></div>
+  );
+  const panelStyle: any = { background: 'rgba(255,255,255,0.025)', border: '1px solid rgba(125,249,255,0.12)', borderRadius: 16, padding: '14px 15px' };
+  const metricTile = (value: any, label: string, unit = '', accent = '#7df9ff') => (
+    <div style={{ textAlign: 'center', minWidth: 58 }}>
+      <div style={{ fontFamily: 'ui-monospace, monospace', fontSize: 22, fontWeight: 300, lineHeight: 1, color: (value === null || value === undefined) ? 'rgba(255,255,255,0.32)' : accent }}>{(value === null || value === undefined) ? '--' : value}<span style={{ fontSize: 11, opacity: 0.7 }}>{unit}</span></div>
+      <div style={{ fontSize: 9, opacity: 0.6, fontFamily: 'ui-monospace, monospace', letterSpacing: 1, marginTop: 4 }}>{label}</div>
+    </div>
+  );
+  const glanceTile = (value: any, label: string, accent = '#c6f6ff') => (
+    <div style={{ flex: '1 1 88px', minWidth: 88, padding: '12px 10px', borderRadius: 14, background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(125,249,255,0.12)', textAlign: 'center', animation: 'hudCascade .5s ease both' }}>
+      <div style={{ fontSize: 26, fontWeight: 700, color: accent, lineHeight: 1, textShadow: '0 0 14px rgba(34,211,238,0.4)' }}>{value}</div>
+      <div style={{ fontSize: 9, opacity: 0.6, fontFamily: 'ui-monospace, monospace', letterSpacing: 1.5, marginTop: 5, textTransform: 'uppercase' }}>{label}</div>
+    </div>
+  );
+  const recoveryRing = (pct: any) => {
+    const has = pct !== null && pct !== undefined;
+    const v = has ? Math.max(0, Math.min(100, pct)) : 0;
+    const r = 40, circ = 2 * Math.PI * r, off = circ * (1 - v / 100);
+    const col = !has ? 'rgba(125,249,255,0.3)' : v >= 67 ? '#34d399' : v >= 34 ? '#fbbf24' : '#ff6b6b';
+    return (
+      <svg width="96" height="96" viewBox="0 0 96 96" style={{ flexShrink: 0 }}>
+        <circle cx="48" cy="48" r="40" fill="none" stroke="rgba(125,249,255,0.1)" strokeWidth="7" />
+        <circle cx="48" cy="48" r="40" fill="none" stroke={col} strokeWidth="7" strokeLinecap="round" strokeDasharray={circ} strokeDashoffset={has ? off : circ} transform="rotate(-90 48 48)" style={{ filter: `drop-shadow(0 0 6px ${col})`, transition: 'stroke-dashoffset 1.2s cubic-bezier(.2,.9,.3,1)' }} />
+        <text x="48" y="46" textAnchor="middle" fill="#eaffff" fontSize="23" fontWeight="700" fontFamily="ui-monospace, monospace">{has ? v : '--'}</text>
+        <text x="48" y="62" textAnchor="middle" fill="rgba(255,255,255,0.55)" fontSize="8.5" fontFamily="ui-monospace, monospace" letterSpacing="1">RECOVERY</text>
+      </svg>
+    );
+  };
   const wakeWsRef = useRef<WebSocket | null>(null);
   const wakeCtxRef = useRef<AudioContext | null>(null);
   const wakeStreamRef = useRef<MediaStream | null>(null);
@@ -168,7 +233,19 @@ export function JarvisHome() {
     if (!REMOTE) return;
     fetchModels().then((m) => { if (m && m[0]) setRemoteModel(m[0].id); }).catch(() => {});
     setClientMessages([]);
+    const _bt = setTimeout(() => { setBoot(false); try { sessionStorage.setItem('jarvis_booted', '1'); } catch { /* */ } }, 2300);
+    void _bt;
     try { localStorage.removeItem('jarvis_client_messages'); } catch { /* ignore */ }
+  }, [REMOTE]);
+
+  useEffect(() => {
+    if (!REMOTE) return;
+    const loadNews = async () => {
+      try { const r = await fetch(`${getBase()}/news`); const d = await r.json(); if (d && d.items) setNews(d.items); } catch { /* */ }
+    };
+    loadNews();
+    const _ni = setInterval(loadNews, 1800000);
+    return () => clearInterval(_ni);
   }, [REMOTE]);
 
   useEffect(() => {
@@ -192,14 +269,34 @@ export function JarvisHome() {
         const db = await rb.json();
         if (db && db.ts && db.ts > Date.now() / 1000 - 30 && db.ts !== brDismissed.current) {
           setBriefingCard(db);
-        } else if (!db || !db.ts || db.ts <= Date.now() / 1000 - 30) {
-          setBriefingCard(null);
         }
+        const rh = await fetch(`${getBase()}/healthdash`);
+        const dh = await rh.json();
+        if (dh && dh.ts && dh.ts > Date.now() / 1000 - 30 && dh.ts !== hcDismissed.current) {
+          setHealthCard(dh);
+        }
+        const rf2 = await fetch(`${getBase()}/finance`);
+        const df2 = await rf2.json();
+        if (df2 && df2.ts && df2.ts > Date.now() / 1000 - 30 && df2.ts !== fcDismissed.current) {
+          setFinanceCard(df2);
+        }
+        const rf = await fetch(`${getBase()}/filematches`);
+        const df = await rf.json();
+        if (df && df.matches && df.matches.length > 0 && df.ts > Date.now() / 1000 - 180 && df.ts !== fmDismissed.current) {
+          setFileMatches(df);
+        } else if (!df || !df.matches || df.matches.length === 0) {
+          setFileMatches(null);
+        }
+        const rmem = await fetch(`${getBase()}/memory`);
+        setSrvMemory((await rmem.json()).items || []);
+        const rss = await fetch(`${getBase()}/sysstats`);
+        setSrvSys(await rss.json());
       } catch { /* ignore */ }
     };
     fetchTimers();
     const id = setInterval(() => { setNowSec(Date.now() / 1000); fetchTimers(); }, 1000);
-    return () => clearInterval(id);
+    const sid = setInterval(async () => { try { const rs = await fetch(`${getBase()}/status`); setSrvStatus(await rs.json()); } catch { /* */ } }, 350);
+    return () => { clearInterval(id); clearInterval(sid); };
   }, [REMOTE]);
 
   const refresh = useCallback(async () => {
@@ -738,7 +835,8 @@ export function JarvisHome() {
           const r = await (await fetch(`${RESOLVER_URL}/translate?text=${encodeURIComponent(text2translate)}&to=${encodeURIComponent(targetLang)}`)).json();
           reply = r.ok ? `In ${targetLang}: ${r.translation}` : `Sir, translation failed.`;
         } catch { reply = "Sir, the translation service is unavailable."; }
-      } else if (/^(good morning|good afternoon|good evening|morning briefing|daily briefing|brief me|what's on today)\b/i.test(tl)) {
+      } else if (/^(good morning|good afternoon|good evening|good day|morning briefing|evening briefing|daily briefing|brief me|what's on today)\b/i.test(tl)) {
+        sendUi('good morning');
         try {
           const r = await (await fetch(`${RESOLVER_URL}/morning_briefing`)).json();
           if (r.ok) reply = r.briefing;
@@ -928,7 +1026,7 @@ export function JarvisHome() {
   };
 
   const sendText = async () => {
-    if (REMOTE) { const q = text.trim(); if (!q || submitting) return; setText(''); const _u = intentUrl(q); if (_u) { window.open(_u, '_blank'); justOpenedRef.current = _u; } remoteChatRef.current(q); inputRef.current?.focus(); return; }
+    if (REMOTE) { const q = text.trim(); if (!q || submitting) return; setText(''); if (/^(good morning|good afternoon|good evening|good day|morning briefing|evening briefing|daily briefing|brief me)\b/i.test(q)) sendUi('good morning'); if (/^(health|health dashboard|my health|recovery|biometrics)\b/i.test(q)) sendUi('health'); if (/\b(finance|finances|spending|expenses|ausgaben|finanzen|budget)\b/i.test(q)) sendUi('finance'); const _u = intentUrl(q); if (_u) { window.open(_u, '_blank'); justOpenedRef.current = _u; } remoteChatRef.current(q); inputRef.current?.focus(); return; }
     if (!text.trim() || submitting) return;
     // Beim ersten Send: Notification-Permission ASK (User-Gesture)
     try {
@@ -1287,28 +1385,37 @@ export function JarvisHome() {
   return (
     <div className="jarvis-home-root">
       <style>{homeStyles}</style>
+      {REMOTE && boot && (
+        <div style={{ position: 'fixed', inset: 0, zIndex: 200, background: '#05080f', display: 'flex', alignItems: 'center', justifyContent: 'center', flexDirection: 'column', gap: 14, overflow: 'hidden', animation: 'jbootFade 2.3s ease forwards' }}>
+          <div style={{ position: 'absolute', top: 0, left: 0, width: '100%', height: '100%', background: 'linear-gradient(90deg, transparent, rgba(34,211,238,0.18), transparent)', animation: 'jbootSweep 1.7s ease-out' }} />
+          <div style={{ position: 'absolute', width: 320, height: 320, borderRadius: '50%', border: '1px solid rgba(34,211,238,0.5)', animation: 'jbootRing 1.8s ease-out' }} />
+          <div style={{ fontSize: 'clamp(30px, 8vw, 68px)', fontWeight: 800, color: 'rgba(125,249,255,0.96)', letterSpacing: '0.3em', textShadow: '0 0 34px rgba(34,211,238,0.65)', animation: 'jbootText 1.5s ease forwards' }}>JARVIS</div>
+          <div style={{ fontSize: 13, color: 'rgba(125,249,255,0.6)', letterSpacing: '0.45em' }}>ONLINE</div>
+        </div>
+      )}
       {REMOTE && (
         <button onClick={() => wakeToggleRef.current()} title="Wake word"
-          style={{ position: 'absolute', top: 64, right: 16, zIndex: 50, padding: '6px 12px', borderRadius: 20, border: 'none', cursor: 'pointer', background: wakeOn ? '#16a34a' : '#3f3f46', color: '#fff', fontSize: 12, whiteSpace: 'nowrap' }}>
+          style={{ position: 'absolute', top: 64, right: 16, zIndex: 50, padding: '6px 12px', borderRadius: 20, border: '1px solid rgba(125, 249, 255, 0.3)', cursor: 'pointer', background: wakeOn ? 'rgba(34, 211, 238, 0.28)' : 'rgba(15, 35, 70, 0.45)', color: 'rgba(220, 240, 255, 0.95)', fontSize: 12, whiteSpace: 'nowrap', backdropFilter: 'blur(6px)' }}>
           {wakeOn ? 'Hey Jarvis: ON' : 'Wake: OFF'}{wakeStatus ? ' - ' + wakeStatus : ''}
         </button>
       )}
       {REMOTE && (
         <button onClick={() => { const nv = !deepMode; setDeepMode(nv); try { localStorage.setItem('jarvis_deep', nv ? 'on' : 'off'); } catch { /* */ } }}
           title="Deep mode: 14B model (smarter, slower)"
-          style={{ position: 'absolute', top: 100, right: 16, zIndex: 50, padding: '6px 12px', borderRadius: 20, border: 'none', cursor: 'pointer', background: deepMode ? '#7c3aed' : '#3f3f46', color: '#fff', fontSize: 12, whiteSpace: 'nowrap' }}>
+          style={{ position: 'absolute', top: 100, right: 16, zIndex: 50, padding: '6px 12px', borderRadius: 20, border: '1px solid rgba(125, 249, 255, 0.3)', cursor: 'pointer', background: deepMode ? 'rgba(168, 85, 247, 0.32)' : 'rgba(15, 35, 70, 0.45)', color: 'rgba(220, 240, 255, 0.95)', fontSize: 12, whiteSpace: 'nowrap', backdropFilter: 'blur(6px)' }}>
           {deepMode ? 'Deep: 14B' : 'Deep: off'}
         </button>
       )}
       {REMOTE && (
         <div style={{ position: 'absolute', top: 140, right: 16, zIndex: 40, width: 230, display: 'flex', flexDirection: 'column', gap: 8 }}>
+          <div style={{ fontSize: 11, opacity: 0.6, color: 'rgba(220, 240, 255, 0.95)', paddingLeft: 4, letterSpacing: 1 }}>TIMERS</div>
           <div style={{ display: 'flex', gap: 4 }}>
             <input value={timerInput} onChange={(e) => setTimerInput(e.target.value)}
               onKeyDown={(e) => { if (e.key === 'Enter') { const m = parseFloat(timerInput); if (m > 0) { fetch(getBase() + '/timers', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ fire: Date.now() / 1000 + m * 60, label: '', kind: 'timer' }) }).then(() => setTimerInput('')).catch(() => {}); } } }}
               placeholder="min" inputMode="decimal"
-              style={{ width: 70, padding: '6px 8px', borderRadius: 8, border: '1px solid #2a2a2e', background: 'rgba(24,24,28,0.92)', color: '#e7e7ea', fontSize: 13 }} />
+              style={{ width: 70, padding: '6px 8px', borderRadius: 8, border: '1px solid rgba(125, 249, 255, 0.18)', background: 'rgba(10, 25, 47, 0.62)', color: 'rgba(220, 240, 255, 0.95)', fontSize: 13 }} />
             <button onClick={() => { const m = parseFloat(timerInput); if (m > 0) { fetch(getBase() + '/timers', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ fire: Date.now() / 1000 + m * 60, label: '', kind: 'timer' }) }).then(() => setTimerInput('')).catch(() => {}); } }}
-              style={{ flex: 1, padding: '6px 8px', borderRadius: 8, border: 'none', cursor: 'pointer', background: '#2563eb', color: '#fff', fontSize: 12 }}>+ Timer</button>
+              style={{ flex: 1, padding: '6px 8px', borderRadius: 8, border: 'none', cursor: 'pointer', background: 'rgba(34, 211, 238, 0.85)', color: '#fff', fontSize: 12 }}>+ Timer</button>
           </div>
           {srvTimers.map((t) => {
             const rem = Math.max(0, Math.floor(t.fire - nowSec));
@@ -1316,9 +1423,9 @@ export function JarvisHome() {
             const disp = hh > 0 ? `${hh}:${String(mm).padStart(2, '0')}:${String(ss).padStart(2, '0')}` : `${mm}:${String(ss).padStart(2, '0')}`;
             const icon = t.kind === 'alarm' ? '⏰' : t.kind === 'reminder' ? '📝' : '⏱️';
             return (
-              <div key={t.id} style={{ position: 'relative', background: 'rgba(24,24,28,0.92)', border: '1px solid #2a2a2e', borderRadius: 12, padding: '8px 12px', color: '#e7e7ea', boxShadow: '0 2px 10px rgba(0,0,0,0.3)' }}>
+              <div key={t.id} style={{ position: 'relative', background: 'rgba(10, 25, 47, 0.62)', border: '1px solid rgba(125, 249, 255, 0.18)', borderRadius: 12, padding: '8px 12px', color: 'rgba(220, 240, 255, 0.95)', boxShadow: '0 8px 24px rgba(0,0,0,0.5)' }}>
                 <button onClick={() => { fetch(getBase() + '/timers/' + t.id, { method: 'DELETE' }).then(() => setSrvTimers((s) => s.filter((z) => z.id !== t.id))).catch(() => {}); }}
-                  title="Delete" style={{ position: 'absolute', top: 4, right: 6, background: 'transparent', border: 'none', color: '#9a9aa0', cursor: 'pointer', fontSize: 16, lineHeight: 1, padding: 0 }}>×</button>
+                  title="Delete" style={{ position: 'absolute', top: 4, right: 6, background: 'transparent', border: 'none', color: 'rgba(125, 249, 255, 0.55)', cursor: 'pointer', fontSize: 16, lineHeight: 1, padding: 0 }}>×</button>
                 <div style={{ fontSize: 11, opacity: 0.65, textTransform: 'capitalize', paddingRight: 16 }}>{icon} {t.kind}{t.label ? ' · ' + t.label : ''}</div>
                 <div style={{ fontSize: 22, fontWeight: 600, fontVariantNumeric: 'tabular-nums', color: rem <= 10 ? '#f87171' : '#fff' }}>{disp}</div>
               </div>
@@ -1326,13 +1433,16 @@ export function JarvisHome() {
           })}
         </div>
       )}
-      {REMOTE && srvNotes.length > 0 && (
-        <div style={{ position: 'absolute', bottom: 16, right: 16, zIndex: 40, width: 230, display: 'flex', flexDirection: 'column', gap: 6, maxHeight: '40vh', overflowY: 'auto' }}>
-          <div style={{ fontSize: 11, opacity: 0.6, color: '#e7e7ea', paddingLeft: 4 }}>NOTES</div>
+      {REMOTE && (
+        <div style={{ position: 'absolute', bottom: 16, right: 16, zIndex: 40, width: 230, display: 'flex', flexDirection: 'column', gap: 6, maxHeight: '45vh', overflowY: 'auto' }}>
+          <div style={{ fontSize: 11, opacity: 0.6, color: 'rgba(220, 240, 255, 0.95)', paddingLeft: 4, letterSpacing: 1 }}>NOTES</div>
+          <input value={noteInput} onChange={(e) => setNoteInput(e.target.value)}
+            onKeyDown={(e) => { if (e.key === 'Enter' && noteInput.trim()) { fetch(getBase() + '/notes', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ text: noteInput.trim() }) }).then(() => setNoteInput('')).catch(() => {}); } }}
+            placeholder="add a note..." style={inStyle} />
           {srvNotes.map((n) => (
-            <div key={n.id} style={{ position: 'relative', background: 'rgba(24,24,28,0.92)', border: '1px solid #2a2a2e', borderRadius: 12, padding: '8px 12px', color: '#e7e7ea', boxShadow: '0 2px 10px rgba(0,0,0,0.3)' }}>
+            <div key={n.id} style={{ position: 'relative', background: 'rgba(10, 25, 47, 0.62)', border: '1px solid rgba(125, 249, 255, 0.18)', borderRadius: 12, padding: '8px 12px', color: 'rgba(220, 240, 255, 0.95)', boxShadow: '0 8px 24px rgba(0,0,0,0.5)' }}>
               <button onClick={() => { fetch(getBase() + '/notes/' + n.id, { method: 'DELETE' }).then(() => setSrvNotes((sx) => sx.filter((z) => z.id !== n.id))).catch(() => {}); }}
-                title="Delete" style={{ position: 'absolute', top: 4, right: 6, background: 'transparent', border: 'none', color: '#9a9aa0', cursor: 'pointer', fontSize: 16, lineHeight: 1, padding: 0 }}>×</button>
+                title="Delete" style={{ position: 'absolute', top: 4, right: 6, background: 'transparent', border: 'none', color: 'rgba(125, 249, 255, 0.55)', cursor: 'pointer', fontSize: 16, lineHeight: 1, padding: 0 }}>×</button>
               <div style={{ fontSize: 13, paddingRight: 16, whiteSpace: 'pre-wrap' }}>{n.text}</div>
             </div>
           ))}
@@ -1341,7 +1451,7 @@ export function JarvisHome() {
       {REMOTE && weatherCard && weatherCard.current && (
         <div onClick={() => { wxDismissed.current = weatherCard.ts; setWeatherCard(null); }}
           style={{ position: 'absolute', inset: 0, zIndex: 80, display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'rgba(0,0,0,0.45)', backdropFilter: 'blur(4px)' }}>
-          <div style={{ width: 'min(92vw, 560px)', borderRadius: 24, padding: 24, color: '#fff', boxShadow: '0 20px 60px rgba(0,0,0,0.5)', background: wxGradient(weatherCard.current.code) }}>
+          <div style={{ width: 'min(92vw, 560px)', borderRadius: 24, padding: 24, color: '#fff', boxShadow: '0 20px 60px rgba(0,0,0,0.6)', background: wxGradient(weatherCard.current.code) }}>
             <div style={{ fontSize: 13, opacity: 0.85 }}>{weatherCard.location}</div>
             <div style={{ display: 'flex', alignItems: 'center', gap: 14, marginTop: 4 }}>
               <div style={{ fontSize: 64, lineHeight: 1 }}>{wxEmoji(weatherCard.current.code)}</div>
@@ -1366,37 +1476,429 @@ export function JarvisHome() {
         </div>
       )}
       {REMOTE && briefingCard && briefingCard.greeting && (
-        <div onClick={() => { brDismissed.current = briefingCard.ts; setBriefingCard(null); }}
-          style={{ position: 'absolute', inset: 0, zIndex: 81, display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'rgba(0,0,0,0.5)', backdropFilter: 'blur(5px)' }}>
-          <div style={{ width: 'min(92vw, 440px)', borderRadius: 24, padding: 26, color: '#fff', boxShadow: '0 20px 60px rgba(0,0,0,0.55)', background: briefingCard.weather ? wxGradient(briefingCard.weather.code) : 'linear-gradient(135deg,#232526,#414345)' }}>
-            <div style={{ fontSize: 26, fontWeight: 700 }}>{briefingCard.greeting}</div>
-            <div style={{ fontSize: 13, opacity: 0.85, marginTop: 2 }}>{briefingCard.date} · {briefingCard.time}</div>
-            {briefingCard.weather && (
-              <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginTop: 16 }}>
-                <div style={{ fontSize: 46 }}>{wxEmoji(briefingCard.weather.code)}</div>
-                <div>
-                  <div style={{ fontSize: 30, fontWeight: 700, lineHeight: 1 }}>{briefingCard.weather.temp}°</div>
-                  <div style={{ fontSize: 12, opacity: 0.9, textTransform: 'capitalize' }}>{briefingCard.weather.desc} · {briefingCard.weather.max}° / {briefingCard.weather.min}°</div>
+        <div className="bd-wrap" onClick={() => { brDismissed.current = briefingCard.ts; setBriefingCard(null); }}>
+          <div className="bd-gridbg" />
+          <svg className="bd-reactor" viewBox="0 0 400 400">
+            <g style={{ transformOrigin: '200px 200px', animation: 'hudSpin 40s linear infinite' }}>
+              <circle cx="200" cy="200" r="190" fill="none" stroke="rgba(125,249,255,0.25)" strokeWidth="1" strokeDasharray="2 10" />
+              <circle cx="200" cy="200" r="168" fill="none" stroke="rgba(125,249,255,0.4)" strokeWidth="1.5" strokeDasharray="40 16" />
+            </g>
+            <g style={{ transformOrigin: '200px 200px', animation: 'hudSpinR 28s linear infinite' }}>
+              <circle cx="200" cy="200" r="140" fill="none" stroke="rgba(34,211,238,0.5)" strokeWidth="1" strokeDasharray="3 12" />
+              <circle cx="200" cy="200" r="118" fill="none" stroke="rgba(125,249,255,0.3)" strokeWidth="1" />
+            </g>
+            <g style={{ transformOrigin: '200px 200px', animation: 'hudSpin 18s linear infinite' }}>
+              {Array.from({ length: 48 }).map((_, k) => (<rect key={k} x="199" y="14" width="2" height={k % 4 === 0 ? 14 : 7} fill="rgba(125,249,255,0.4)" transform={`rotate(${k * 7.5} 200 200)`} />))}
+            </g>
+            <circle cx="200" cy="200" r="92" fill="none" stroke="rgba(125,249,255,0.18)" strokeWidth="1" />
+          </svg>
+          <div className="bd-scan" />
+          <button className="bd-close" onClick={(e) => { e.stopPropagation(); brDismissed.current = briefingCard.ts; setBriefingCard(null); }}>✕</button>
+
+          <div className="bd-deck" onClick={(e) => e.stopPropagation()}>
+            <div className="bd-panel bd-cell" style={{ gridColumn: 3, gridRow: 1, justifyContent: 'center', gap: 6 }}>
+              <div style={{ fontFamily: 'ui-monospace, monospace', fontSize: 13, letterSpacing: 3, color: '#7df9ff', textShadow: '0 0 14px rgba(34,211,238,0.5)' }}>J.A.R.V.I.S</div>
+              <div style={{ fontFamily: 'ui-monospace, monospace', fontSize: 10, letterSpacing: 1.5, opacity: 0.65 }}>MORNING BRIEFING PROTOCOL</div>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 7, marginTop: 6, fontFamily: 'ui-monospace, monospace', fontSize: 11 }}><span style={{ width: 8, height: 8, borderRadius: '50%', background: '#22d3ee', boxShadow: '0 0 10px #22d3ee', animation: 'hudGlow 1.6s ease-in-out infinite' }} />ALL SYSTEMS ONLINE</div>
+            </div>
+
+            <div className="bd-cell" style={{ gridColumn: 2, gridRow: 1, alignItems: 'center', justifyContent: 'center', textAlign: 'center' }}>
+              <div style={{ fontSize: 'clamp(20px,2.6vw,32px)', fontWeight: 300, letterSpacing: '0.14em', textTransform: 'uppercase', color: '#c6f6ff', textShadow: '0 0 26px rgba(34,211,238,0.65)', animation: 'hudReveal 1s ease both' }}>{briefingCard.greeting}</div>
+              <div style={{ fontFamily: 'ui-monospace, monospace', fontSize: 'clamp(40px,7vw,92px)', fontWeight: 700, letterSpacing: 4, lineHeight: 1, marginTop: 8, color: '#eaffff', textShadow: '0 0 34px rgba(34,211,238,0.55)' }}>{new Date((nowSec || Date.now() / 1000) * 1000).toLocaleTimeString('de-CH', { hour: '2-digit', minute: '2-digit', second: '2-digit' })}</div>
+              <div style={{ fontFamily: 'ui-monospace, monospace', fontSize: 13, opacity: 0.75, marginTop: 8, letterSpacing: 2 }}>{briefingCard.date}</div>
+            </div>
+
+            <div className="bd-panel bd-cell" style={{ gridColumn: 1, gridRow: 1, justifyContent: 'center', gap: 8 }}>
+              {briefingCard.weather ? (
+                <>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 11 }}>
+                    <div style={{ fontSize: 40, lineHeight: 1, filter: 'drop-shadow(0 0 9px rgba(34,211,238,0.5))' }}>{wxEmoji(briefingCard.weather.code)}</div>
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <div style={{ fontSize: 34, fontWeight: 200, lineHeight: 0.9 }}>{briefingCard.weather.temp}°<span style={{ fontFamily: 'ui-monospace, monospace', fontSize: 11, opacity: 0.7, marginLeft: 8 }}>H{briefingCard.weather.max}° L{briefingCard.weather.min}°</span></div>
+                      <div style={{ fontSize: 11, opacity: 0.85, textTransform: 'capitalize', marginTop: 2 }}>{briefingCard.weather.desc}</div>
+                    </div>
+                  </div>
+                  {briefingCard.weather.hourly && briefingCard.weather.hourly.length > 1 && (() => {
+                    const hrs = briefingCard.weather.hourly.slice(0, 24);
+                    const temps = hrs.map((h: any) => h.temp);
+                    const mn = Math.min(...temps), mx = Math.max(...temps), span = Math.max(1, mx - mn);
+                    const W = 300, H = 42, pad = 4;
+                    const X = (i: number) => pad + (i / (hrs.length - 1)) * (W - 2 * pad);
+                    const Y = (v: number) => 4 + (1 - (v - mn) / span) * (H - 10);
+                    const line = hrs.map((h: any, i: number) => (i ? 'L' : 'M') + X(i).toFixed(1) + ' ' + Y(h.temp).toFixed(1)).join(' ');
+                    const area = line + ' L' + X(hrs.length - 1).toFixed(1) + ' ' + H + ' L' + X(0).toFixed(1) + ' ' + H + ' Z';
+                    return (
+                      <svg viewBox={`0 0 ${W} ${H}`} preserveAspectRatio="none" style={{ width: '100%', height: 42, display: 'block' }}>
+                        <defs><linearGradient id="wxmini" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stopColor="rgba(125,249,255,0.35)" /><stop offset="100%" stopColor="rgba(125,249,255,0)" /></linearGradient></defs>
+                        <path d={area} fill="url(#wxmini)" />
+                        <path d={line} fill="none" stroke="#7df9ff" strokeWidth="2" vectorEffect="non-scaling-stroke" style={{ filter: 'drop-shadow(0 0 3px rgba(125,249,255,0.7))' }} />
+                      </svg>
+                    );
+                  })()}
+                  {briefingCard.weather.hourly && (
+                    <div style={{ display: 'flex', justifyContent: 'space-between', fontFamily: 'ui-monospace, monospace', fontSize: 9.5, opacity: 0.65 }}>
+                      {briefingCard.weather.hourly.filter((_: any, i: number) => i % 4 === 0).slice(0, 6).map((h: any, i: number) => (<span key={i}>{h.t}h·{h.temp}°</span>))}
+                    </div>
+                  )}
+                  <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', fontFamily: 'ui-monospace, monospace', fontSize: 10, opacity: 0.78 }}>
+                    {briefingCard.weather.feels != null && <span>🌡{briefingCard.weather.feels}°</span>}
+                    {briefingCard.weather.humidity != null && <span>💧{briefingCard.weather.humidity}%</span>}
+                    {briefingCard.weather.wind != null && <span>💨{briefingCard.weather.wind}</span>}
+                    {briefingCard.weather.sunrise && <span>🌅{briefingCard.weather.sunrise}</span>}
+                    {briefingCard.weather.sunset && <span>🌇{briefingCard.weather.sunset}</span>}
+                  </div>
+                </>
+              ) : <div style={{ opacity: 0.5, fontFamily: 'ui-monospace, monospace', fontSize: 12 }}>// NO WEATHER DATA</div>}
+            </div>
+
+            <div className="bd-panel bd-cell sc" style={{ gridColumn: 1, gridRow: 2 }}>
+              {hudLabel('⚡ WHOOP // BIOMETRICS')}
+              <div style={{ display: 'flex', justifyContent: 'center', marginBottom: 10 }}>{recoveryRing(briefingCard.whoop_stats ? briefingCard.whoop_stats.recovery : null)}</div>
+              <div style={{ display: 'flex', justifyContent: 'space-around', flexWrap: 'wrap', gap: 12 }}>
+                {(() => { const st = briefingCard.whoop_stats || {}; return (st.strain != null) ? briefRing(st.strain, 'STRAIN') : metricTile(null, 'STRAIN'); })()}
+                {metricTile(briefingCard.whoop_stats && briefingCard.whoop_stats.sleep, 'SLEEP', 'h')}
+                {metricTile(briefingCard.whoop_stats && briefingCard.whoop_stats.hrv, 'HRV', 'ms')}
+                {metricTile(briefingCard.whoop_stats && briefingCard.whoop_stats.rhr, 'RHR', '')}
+              </div>
+              {briefingCard.whoop_items && briefingCard.whoop_items.length > 0 && (
+                <div style={{ marginTop: 12 }}>
+                  {briefingCard.whoop_items.slice(0, 3).map((w: any, idx: number) => (
+                    <div key={idx} style={{ fontSize: 12, opacity: 0.82, padding: '6px 0', borderTop: '1px solid rgba(125,249,255,0.08)', lineHeight: 1.4 }}><b style={{ color: '#c6f6ff' }}>{w.title}</b> <span style={{ opacity: 0.75 }}>{w.text}</span></div>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            <div className="bd-cell" style={{ gridColumn: 2, gridRow: 2, justifyContent: 'center', gap: 16 }}>
+              <div style={{ display: 'flex', gap: 12, justifyContent: 'center', flexWrap: 'wrap' }}>
+                {glanceTile((briefingCard.messages && briefingCard.messages.count) || 0, 'Messages')}
+                {glanceTile((briefingCard.items && briefingCard.items.length) || 0, 'Events')}
+                {glanceTile((briefingCard.whoop_stats && briefingCard.whoop_stats.strain != null) ? briefingCard.whoop_stats.strain : '--', 'Strain', '#fbbf24')}
+                {glanceTile((news && news.length) || 0, 'Headlines')}
+              </div>
+              <div className="bd-panel sc" style={{ maxHeight: '38vh' }}>
+                {hudLabel('AGENDA')}
+                {(briefingCard.calendar || []).map((c: any, idx: number) => (
+                  <div key={'c' + idx} style={{ display: 'flex', gap: 10, alignItems: 'center', padding: '8px 0', borderTop: idx ? '1px solid rgba(125,249,255,0.07)' : 'none' }}>
+                    <span style={{ fontSize: 16 }}>📅</span>
+                    <span style={{ fontSize: 14, flex: 1 }}>{c.title}</span>
+                    <span style={{ fontFamily: 'ui-monospace, monospace', fontSize: 12, opacity: 0.85 }}>{c.time}</span>
+                  </div>
+                ))}
+                {(briefingCard.items || []).map((it: any, idx: number) => (
+                  <div key={'t' + idx} style={{ display: 'flex', gap: 10, alignItems: 'center', padding: '8px 0', borderTop: (idx || (briefingCard.calendar && briefingCard.calendar.length)) ? '1px solid rgba(125,249,255,0.07)' : 'none' }}>
+                    <span style={{ fontSize: 17 }}>{it.kind === 'alarm' ? '⏰' : it.kind === 'reminder' ? '📝' : '⏱️'}</span>
+                    <span style={{ fontSize: 14, flex: 1, textTransform: 'capitalize' }}>{it.label || it.kind}</span>
+                    <span style={{ fontFamily: 'ui-monospace, monospace', fontSize: 12, opacity: 0.85 }}>{it.when}</span>
+                  </div>
+                ))}
+                {(!(briefingCard.items && briefingCard.items.length) && !(briefingCard.calendar && briefingCard.calendar.length)) && (<div style={{ fontFamily: 'ui-monospace, monospace', fontSize: 12, opacity: 0.5 }}>// CLEAR DAY, SIR</div>)}
+                {(!briefingCard.calendar || !briefingCard.calendar.length) && (<div style={{ fontFamily: 'ui-monospace, monospace', fontSize: 9.5, opacity: 0.35, marginTop: 8 }}>📅 calendar — not connected yet</div>)}
+              </div>
+            </div>
+
+            <div className="bd-panel bd-cell sc" style={{ gridColumn: 3, gridRow: 2 }}>
+              {hudLabel('MESSAGES // ' + ((briefingCard.messages && briefingCard.messages.count) || 0))}
+              {((briefingCard.messages && briefingCard.messages.items) || []).map((m: any, idx: number) => (
+                <div key={idx} style={{ display: 'flex', gap: 10, alignItems: 'center', padding: '8px 0', borderTop: idx ? '1px solid rgba(125,249,255,0.07)' : 'none', animation: 'hudCascade .5s ease both', animationDelay: (idx * 0.06) + 's' }}>
+                  <span style={{ width: 32, height: 32, borderRadius: 9, flexShrink: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 14, fontWeight: 700, color: '#04121f', background: m.vip ? 'linear-gradient(145deg,#7df9ff,#22d3ee)' : 'rgba(125,249,255,0.18)', boxShadow: m.vip ? '0 0 10px rgba(125,249,255,0.6)' : 'none' }}>{(m.who || '?').slice(0, 1).toUpperCase()}</span>
+                  <div style={{ minWidth: 0, flex: 1 }}>
+                    <div style={{ fontSize: 13, fontWeight: 600, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', color: m.vip ? '#bfefff' : 'inherit' }}>{m.vip ? '★ ' : ''}{m.who}</div>
+                    <div style={{ fontSize: 12, opacity: 0.72, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{m.text}</div>
+                  </div>
+                  <span style={{ fontFamily: 'ui-monospace, monospace', fontSize: 9, opacity: 0.5, whiteSpace: 'nowrap' }}>{m.app}</span>
+                </div>
+              ))}
+            </div>
+
+            {news && news.length > 0 && (
+              <div className="bd-panel" style={{ gridColumn: '1 / -1', gridRow: 3 }}>
+                {hudLabel('INTEL // TAGESSCHAU')}
+                <div className="bd-newsrow">
+                  {news.slice(0, 8).map((nw: any, idx: number) => (
+                    <a key={idx} className="bd-newscard" href={nw.link || '#'} target="_blank" rel="noreferrer" onClick={(e) => e.stopPropagation()} style={{ animationDelay: (idx * 0.06) + 's' }}>
+                      {nw.image && (<div style={{ height: 86, backgroundImage: `linear-gradient(180deg, rgba(3,9,18,0) 45%, rgba(3,9,18,0.6)), url(${nw.image})`, backgroundSize: 'cover', backgroundPosition: 'center' }} />)}
+                      <div style={{ padding: '8px 10px 10px' }}>
+                        <div style={{ fontSize: 12.5, fontWeight: 650, lineHeight: 1.25, color: '#eaf6ff', display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', overflow: 'hidden' }}>{nw.title}</div>
+                      </div>
+                    </a>
+                  ))}
                 </div>
               </div>
             )}
-            <div style={{ marginTop: 18 }}>
-              <div style={{ fontSize: 11, opacity: 0.7, marginBottom: 6, letterSpacing: 1 }}>SCHEDULE</div>
-              {(briefingCard.items && briefingCard.items.length > 0) ? briefingCard.items.map((it: any, idx: number) => (
-                <div key={idx} style={{ display: 'flex', gap: 8, alignItems: 'center', background: 'rgba(255,255,255,0.13)', borderRadius: 12, padding: '8px 12px', marginBottom: 6 }}>
-                  <span style={{ fontSize: 18 }}>{it.kind === 'alarm' ? '⏰' : it.kind === 'reminder' ? '📝' : '⏱️'}</span>
-                  <span style={{ fontSize: 14, flex: 1, textTransform: 'capitalize' }}>{it.label || it.kind}</span>
-                  <span style={{ fontSize: 12, opacity: 0.85 }}>{it.when}</span>
-                </div>
-              )) : <div style={{ fontSize: 13, opacity: 0.7 }}>Nothing scheduled.</div>}
-            </div>
-            <div style={{ fontSize: 11, opacity: 0.6, textAlign: 'center', marginTop: 14 }}>tap to close</div>
           </div>
+        </div>
+      )}
+      {REMOTE && healthCard && healthCard.recovery != null && (() => {
+        const h = healthCard;
+        const rc = h.recovery, rcol = rc >= 67 ? '#34d399' : rc >= 34 ? '#fbbf24' : '#ff6b6b';
+        const rword = rc >= 67 ? 'PRIMED' : rc >= 34 ? 'MODERATE' : 'LOW';
+        const sp = h.sleep_perf || 0, scol = sp >= 85 ? '#34d399' : sp >= 70 ? '#38bdf8' : '#fbbf24';
+        const sword = sp >= 85 ? 'OPTIMAL' : sp >= 70 ? 'GOOD' : 'LOW';
+        const stn = h.strain != null ? h.strain : 0, stword = stn >= 18 ? 'ALL OUT' : stn >= 14 ? 'STRENUOUS' : stn >= 10 ? 'MODERATE' : 'LIGHT';
+        const recCol = (v: any) => v >= 67 ? '#34d399' : v >= 34 ? '#fbbf24' : '#ff6b6b';
+        const ring = (val: any, mx: any, unit: any, color: any, label: any, icon: any, qual: any, size: any) => {
+          const r = size / 2 - 9, c = 2 * Math.PI * r, pct = Math.max(0, Math.min(1, (val || 0) / mx)), off = c * (1 - pct), cx = size / 2;
+          return (
+            <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 10 }}>
+              <svg width={size} height={size} viewBox={`0 0 ${size} ${size}`}>
+                <circle cx={cx} cy={cx} r={r} fill="none" stroke="rgba(125,249,255,0.09)" strokeWidth="10" />
+                <circle cx={cx} cy={cx} r={r} fill="none" stroke={color} strokeWidth="10" strokeLinecap="round" strokeDasharray={c} strokeDashoffset={off} transform={`rotate(-90 ${cx} ${cx})`} style={{ filter: `drop-shadow(0 0 12px ${color})`, transition: 'stroke-dashoffset 1.4s cubic-bezier(.2,.9,.3,1)' }} />
+                <text x={cx} y={cx - 1} textAnchor="middle" fill="#eaffff" fontSize={size * 0.3} fontWeight="700" fontFamily="ui-monospace, monospace">{val == null ? '--' : val}<tspan fontSize={size * 0.13} dy="-4">{unit}</tspan></text>
+                <text x={cx} y={cx + size * 0.17} textAnchor="middle" fill={color} fontSize={size * 0.085} fontWeight="700" fontFamily="ui-monospace, monospace" letterSpacing="2">{qual}</text>
+              </svg>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 7, fontFamily: 'ui-monospace, monospace', fontSize: 13, letterSpacing: 2, color: '#cbe9ff' }}><span style={{ fontSize: 17 }}>{icon}</span>{label}</div>
+            </div>
+          );
+        };
+        const ess = (icon: any, val: any, unit: any, label: any) => (
+          <div style={{ textAlign: 'center', minWidth: 78 }}>
+            <div style={{ fontSize: 18 }}>{icon}</div>
+            <div style={{ fontSize: 26, fontWeight: 700, color: '#eaffff', lineHeight: 1.1, fontFamily: 'ui-monospace, monospace' }}>{val == null ? '--' : val}<span style={{ fontSize: 12, opacity: 0.6 }}>{unit}</span></div>
+            <div style={{ fontSize: 9.5, opacity: 0.5, fontFamily: 'ui-monospace, monospace', letterSpacing: 1.5 }}>{label}</div>
+          </div>
+        );
+        const tr = h.trend_recovery || [];
+        const mxt = Math.max(...tr, 1);
+        const dl = (n: any) => { const o = []; for (let i = 0; i < n; i++) { const d = new Date(Date.now() - (n - 1 - i) * 86400000); o.push(i === n - 1 ? 'TODAY' : d.toLocaleDateString('de-CH', { weekday: 'short' }).toUpperCase()); } return o; };
+        const days = dl(tr.length);
+        return (
+          <div className="bd-wrap" onClick={() => { hcDismissed.current = h.ts; setHealthCard(null); }}>
+            <div className="bd-gridbg" />
+            <svg className="bd-reactor" viewBox="0 0 400 400">
+              <g style={{ transformOrigin: '200px 200px', animation: 'hudSpin 44s linear infinite' }}><circle cx="200" cy="200" r="188" fill="none" stroke="rgba(125,249,255,0.18)" strokeWidth="1" strokeDasharray="2 13" /></g>
+              <g style={{ transformOrigin: '200px 200px', animation: 'hudSpinR 30s linear infinite' }}><circle cx="200" cy="200" r="152" fill="none" stroke="rgba(34,211,238,0.3)" strokeWidth="1" strokeDasharray="34 16" /></g>
+            </svg>
+            <div className="bd-scan" />
+            <button className="bd-close" onClick={(e) => { e.stopPropagation(); hcDismissed.current = h.ts; setHealthCard(null); }}>✕</button>
+            <div onClick={(e) => e.stopPropagation()} style={{ position: 'relative', height: '100vh', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 'clamp(20px,3.5vh,40px)', padding: 'clamp(20px,4vh,50px)', boxSizing: 'border-box', overflowY: 'auto' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 14, fontSize: 'clamp(20px,2.6vw,30px)', fontWeight: 300, letterSpacing: '0.2em', textTransform: 'uppercase', color: '#c6f6ff', textShadow: '0 0 26px rgba(34,211,238,0.6)', animation: 'hudReveal 1s ease both' }}>
+                &#10084; HEALTH<span style={{ fontFamily: 'ui-monospace, monospace', fontSize: 11, letterSpacing: 2, opacity: 0.55, display: 'flex', alignItems: 'center', gap: 6 }}><span style={{ width: 7, height: 7, borderRadius: '50%', background: '#22d3ee', boxShadow: '0 0 9px #22d3ee', animation: 'hudGlow 1.6s ease-in-out infinite' }} />WHOOP LIVE</span>
+              </div>
+
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 'clamp(16px,4vw,64px)', flexWrap: 'wrap' }}>
+                {ring(sp, 100, '%', scol, 'SLEEP ' + (h.sleep != null ? h.sleep + 'h' : ''), '🛌', sword, 178)}
+                {ring(rc, 100, '%', rcol, 'RECOVERY', '❤️', rword, 240)}
+                {ring(stn, 21, '', '#7df9ff', 'STRAIN', '⚡', stword, 178)}
+              </div>
+
+              <div style={{ display: 'flex', gap: 'clamp(18px,4vw,54px)', flexWrap: 'wrap', justifyContent: 'center' }}>
+                {ess('💓', h.hrv, 'ms', 'HRV')}
+                {ess('❤️', h.rhr, '', 'RESTING HR')}
+                {ess('🛌', h.sleep_needed, 'h', 'SLEEP NEED')}
+                {ess('🔥', h.calories, '', 'CALORIES')}
+              </div>
+
+              {(h.coach || h.readiness) && (
+                <div style={{ maxWidth: 680, width: '90%', borderRadius: 18, padding: '18px 22px', background: 'linear-gradient(135deg, rgba(125,249,255,0.08), rgba(34,211,238,0.04))', border: '1px solid rgba(125,249,255,0.2)', boxShadow: '0 0 30px rgba(34,211,238,0.08)' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 9, flexWrap: 'wrap', gap: 8 }}>
+                    <span style={{ fontFamily: 'ui-monospace, monospace', fontSize: 10, letterSpacing: 2, color: '#7df9ff' }}>&#9670; JARVIS COACH</span>
+                    {h.readiness && <span style={{ fontFamily: 'ui-monospace, monospace', fontSize: 11, color: rcol, fontWeight: 700 }}>{h.readiness.toUpperCase()} · TARGET {h.strain_target}{h.bedtime ? ' · BED ' + h.bedtime : ''}</span>}
+                  </div>
+                  {h.coach && <div style={{ fontSize: 'clamp(14px,1.5vw,17px)', lineHeight: 1.5, color: '#e6f7ff' }}>{h.coach}</div>}
+                </div>
+              )}
+
+              {tr.length > 1 && (
+                <div style={{ width: '90%', maxWidth: 680 }}>
+                  <div style={{ fontFamily: 'ui-monospace, monospace', fontSize: 10, letterSpacing: 2, opacity: 0.55, marginBottom: 10, textAlign: 'center' }}>❤ 7-DAY RECOVERY</div>
+                  <div style={{ display: 'flex', alignItems: 'flex-end', gap: 'clamp(6px,1.5vw,16px)', height: 80, justifyContent: 'center' }}>
+                    {tr.map((v: any, i: number) => { const cc = recCol(v); const today = i === tr.length - 1; return (
+                      <div key={i} style={{ flex: 1, maxWidth: 70, display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 5 }}>
+                        <div style={{ fontSize: 11, fontFamily: 'ui-monospace, monospace', fontWeight: 700, color: today ? cc : '#cbe9ff' }}>{v}</div>
+                        <div style={{ width: '100%', height: Math.max(6, (v / mxt) * 48), borderRadius: '5px 5px 0 0', background: `linear-gradient(180deg, ${cc}, ${cc}22)`, boxShadow: today ? `0 0 14px ${cc}` : `0 0 6px ${cc}88`, transition: 'height .9s ease' }} />
+                        <div style={{ fontSize: 8.5, opacity: today ? 0.9 : 0.4, fontFamily: 'ui-monospace, monospace', fontWeight: today ? 700 : 400 }}>{days[i]}</div>
+                      </div>
+                    ); })}
+                  </div>
+                </div>
+              )}
+            </div>
+          </div>
+        );
+      })()}
+      {REMOTE && financeCard && financeCard.week != null && (() => {
+        const f = financeCard;
+        const icon = (c: any) => ({ 'Groceries': '🛒', 'Food & Drink': '🍽️', 'Transport': '🚆', 'Subscriptions': '🔁', 'Shopping': '🛍️', 'Other': '💳' } as any)[c] || '💳';
+        const cats = f.by_cat || [], maxc = Math.max(1, ...cats.map((c: any) => c.amt));
+        const dy = f.daily || [], maxd = Math.max(1, ...dy.map((d: any) => d.amt));
+        return (
+          <div className="bd-wrap" onClick={() => { fcDismissed.current = f.ts; setFinanceCard(null); }}>
+            <div className="bd-gridbg" />
+            <svg className="bd-reactor" viewBox="0 0 400 400">
+              <g style={{ transformOrigin: '200px 200px', animation: 'hudSpin 44s linear infinite' }}><circle cx="200" cy="200" r="186" fill="none" stroke="rgba(251,191,36,0.16)" strokeWidth="1" strokeDasharray="2 13" /></g>
+              <g style={{ transformOrigin: '200px 200px', animation: 'hudSpinR 30s linear infinite' }}><circle cx="200" cy="200" r="150" fill="none" stroke="rgba(125,249,255,0.28)" strokeWidth="1" strokeDasharray="34 16" /></g>
+            </svg>
+            <div className="bd-scan" />
+            <button className="bd-close" onClick={(e) => { e.stopPropagation(); fcDismissed.current = f.ts; setFinanceCard(null); }}>✕</button>
+            <div onClick={(e) => e.stopPropagation()} style={{ position: 'relative', height: '100vh', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 'clamp(18px,3vh,34px)', padding: 'clamp(20px,4vh,48px)', boxSizing: 'border-box', overflowY: 'auto' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 14, fontSize: 'clamp(20px,2.6vw,30px)', fontWeight: 300, letterSpacing: '0.2em', textTransform: 'uppercase', color: '#c6f6ff', textShadow: '0 0 26px rgba(34,211,238,0.6)', animation: 'hudReveal 1s ease both' }}>
+                &#128179; SPENDING<span style={{ fontFamily: 'ui-monospace, monospace', fontSize: 11, letterSpacing: 2, opacity: 0.55, display: 'flex', alignItems: 'center', gap: 6 }}><span style={{ width: 7, height: 7, borderRadius: '50%', background: '#22d3ee', boxShadow: '0 0 9px #22d3ee', animation: 'hudGlow 1.6s ease-in-out infinite' }} />LIVE</span>
+              </div>
+
+              <div style={{ display: 'flex', gap: 'clamp(20px,5vw,70px)', flexWrap: 'wrap', justifyContent: 'center' }}>
+                <div style={{ textAlign: 'center' }}>
+                  <div style={{ fontFamily: 'ui-monospace, monospace', fontSize: 11, letterSpacing: 2, opacity: 0.55 }}>TODAY</div>
+                  <div style={{ fontSize: 'clamp(40px,6vw,72px)', fontWeight: 200, color: '#fbbf24', lineHeight: 1, textShadow: '0 0 28px rgba(251,191,36,0.4)' }}><span style={{ fontSize: '0.4em', opacity: 0.7 }}>CHF </span>{f.today}</div>
+                </div>
+                <div style={{ textAlign: 'center' }}>
+                  <div style={{ fontFamily: 'ui-monospace, monospace', fontSize: 11, letterSpacing: 2, opacity: 0.55 }}>THIS WEEK</div>
+                  <div style={{ fontSize: 'clamp(40px,6vw,72px)', fontWeight: 200, color: '#eaffff', lineHeight: 1, textShadow: '0 0 28px rgba(34,211,238,0.4)' }}><span style={{ fontSize: '0.4em', opacity: 0.7 }}>CHF </span>{f.week}</div>
+                </div>
+              </div>
+
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))', gap: 16, width: '92%', maxWidth: 860 }}>
+                <div className="bd-panel">
+                  {hudLabel('CATEGORIES')}
+                  {cats.length ? cats.map((c: any, i: number) => (
+                    <div key={i} style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 9 }}>
+                      <span style={{ fontSize: 16, width: 22 }}>{icon(c.cat)}</span>
+                      <span style={{ width: 96, fontSize: 12, opacity: 0.85 }}>{c.cat}</span>
+                      <div style={{ flex: 1, height: 9, borderRadius: 5, background: 'rgba(255,255,255,0.06)', overflow: 'hidden' }}><div style={{ width: (c.amt / maxc * 100) + '%', height: '100%', background: 'linear-gradient(90deg,#fbbf24,#fde68a)', boxShadow: '0 0 7px #fbbf24', transition: 'width .9s ease' }} /></div>
+                      <span style={{ width: 64, textAlign: 'right', fontFamily: 'ui-monospace, monospace', fontSize: 12, color: '#fde68a' }}>{c.amt}</span>
+                    </div>
+                  )) : <div style={{ fontFamily: 'ui-monospace, monospace', fontSize: 12, opacity: 0.5 }}>// no data</div>}
+                </div>
+                <div className="bd-panel sc" style={{ maxHeight: '34vh' }}>
+                  {hudLabel('RECENT')}
+                  {(f.tx || []).map((x: any, i: number) => (
+                    <div key={i} style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '7px 0', borderTop: i ? '1px solid rgba(125,249,255,0.07)' : 'none' }}>
+                      <span style={{ fontSize: 15, width: 20 }}>{icon(x.cat)}</span>
+                      <span style={{ flex: 1, fontSize: 13, fontWeight: 600, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{x.merchant}</span>
+                      <span style={{ fontFamily: 'ui-monospace, monospace', fontSize: 10, opacity: 0.5 }}>{x.time}</span>
+                      <span style={{ width: 62, textAlign: 'right', fontFamily: 'ui-monospace, monospace', fontSize: 13, fontWeight: 700, color: '#fde68a' }}>{x.amount}</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              <div style={{ width: '92%', maxWidth: 860 }}>
+                <div style={{ fontFamily: 'ui-monospace, monospace', fontSize: 10, letterSpacing: 2, opacity: 0.55, marginBottom: 10, textAlign: 'center' }}>&#128197; 7-DAY SPENDING</div>
+                <div style={{ display: 'flex', alignItems: 'flex-end', gap: 'clamp(6px,1.5vw,16px)', height: 84, justifyContent: 'center' }}>
+                  {dy.map((d: any, i: number) => { const today = i === dy.length - 1; return (
+                    <div key={i} style={{ flex: 1, maxWidth: 80, display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 5 }}>
+                      <div style={{ fontSize: 10, fontFamily: 'ui-monospace, monospace', fontWeight: 600, color: today ? '#fbbf24' : '#cbe9ff' }}>{d.amt > 0 ? d.amt : ''}</div>
+                      <div style={{ width: '64%', height: Math.max(4, (d.amt / maxd) * 52), borderRadius: '5px 5px 0 0', background: today ? 'linear-gradient(180deg,#fbbf24,#fbbf2422)' : 'linear-gradient(180deg,#7df9ff,#7df9ff22)', boxShadow: today ? '0 0 12px #fbbf24' : '0 0 6px #7df9ff88', transition: 'height .9s ease' }} />
+                      <div style={{ fontSize: 8.5, opacity: today ? 0.9 : 0.45, fontFamily: 'ui-monospace, monospace', fontWeight: today ? 700 : 400 }}>{d.d}</div>
+                    </div>
+                  ); })}
+                </div>
+              </div>
+            </div>
+          </div>
+        );
+      })()}
+      {REMOTE && fileMatches && fileMatches.matches && fileMatches.matches.length > 0 && (
+        <div onClick={() => { fmDismissed.current = fileMatches.ts; setFileMatches(null); }}
+          style={{ position: 'absolute', inset: 0, zIndex: 82, display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'rgba(0,0,0,0.5)', backdropFilter: 'blur(5px)' }}>
+          <div onClick={(e) => e.stopPropagation()}
+            style={{ width: 'min(94vw, 560px)', maxHeight: '80vh', overflowY: 'auto', borderRadius: 20, padding: 22, color: 'rgba(220, 240, 255, 0.95)', background: 'rgba(10, 25, 47, 0.62)', border: '1px solid rgba(125, 249, 255, 0.18)', boxShadow: '0 20px 60px rgba(0,0,0,0.6)' }}>
+            <div style={{ fontSize: 17, fontWeight: 700, marginBottom: 4 }}>Which file?</div>
+            <div style={{ fontSize: 12, opacity: 0.6, marginBottom: 12 }}>Tap to open · {fileMatches.matches.length} matches</div>
+            {fileMatches.matches.map((f: any, idx: number) => (
+              <div key={idx}
+                onClick={() => { fetch(getBase() + '/fileopen', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ path: f.path }) }).catch(() => {}); fmDismissed.current = fileMatches.ts; setFileMatches(null); }}
+                style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '10px 12px', borderRadius: 12, marginBottom: 6, background: 'rgba(125, 249, 255, 0.12)', cursor: 'pointer', border: '1px solid rgba(125, 249, 255, 0.18)' }}
+                onMouseEnter={(e) => (e.currentTarget.style.background = 'rgba(37,99,235,0.25)')}
+                onMouseLeave={(e) => (e.currentTarget.style.background = 'rgba(125, 249, 255, 0.12)')}>
+                <span style={{ fontSize: 20 }}>📄</span>
+                <div style={{ minWidth: 0, flex: 1 }}>
+                  <div style={{ fontSize: 14, fontWeight: 600, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{f.name}</div>
+                  <div style={{ fontSize: 11, opacity: 0.6, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{f.dir} · {f.modified}</div>
+                </div>
+              </div>
+            ))}
+            <div style={{ fontSize: 11, opacity: 0.55, textAlign: 'center', marginTop: 10 }}>tap outside to dismiss</div>
+          </div>
+        </div>
+      )}
+      {REMOTE && (
+        <div style={{ position: 'absolute', top: 14, left: '50%', transform: 'translateX(-50%)', zIndex: 55, display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 6, pointerEvents: 'none' }}>
+          {srvStatus.state === 'speaking' && (
+            <div style={{ display: 'flex', alignItems: 'center', gap: 3, height: 22 }}>
+              {[0, 1, 2, 3, 4, 5, 6, 7].map((i) => (
+                <span key={i} className="jbar" style={{ animation: 'jbar 0.7s ease-in-out ' + (i * 0.08) + 's infinite' }} />
+              ))}
+            </div>
+          )}
+          {srvStatus.state === 'listening' && (
+            <div style={{ width: 130, height: 5, borderRadius: 3, background: 'rgba(125, 249, 255, 0.12)', overflow: 'hidden' }}>
+              <div style={{ width: Math.min(100, srvStatus.level || 0) + '%', height: '100%', background: '#16a34a', transition: 'width 0.15s' }} />
+            </div>
+          )}
+          {srvStatus.heard && (srvStatus.state === 'thinking' || srvStatus.state === 'speaking') && (
+            <div style={{ maxWidth: 340, fontSize: 12, color: 'rgba(125, 249, 255, 0.55)', textAlign: 'center', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{'“' + srvStatus.heard + '”'}</div>
+          )}
+        </div>
+      )}
+      {REMOTE && srvStatus.playing && (
+        <div style={{ position: 'absolute', bottom: 16, left: 16, zIndex: 45, width: 230, background: 'rgba(10, 25, 47, 0.62)', border: '1px solid rgba(125, 249, 255, 0.18)', borderRadius: 16, padding: '10px 14px', color: 'rgba(220, 240, 255, 0.95)', boxShadow: '0 8px 24px rgba(0,0,0,0.5)' }}>
+          <div style={{ fontSize: 11, opacity: 0.6, marginBottom: 2 }}>NOW PLAYING</div>
+          <div style={{ fontSize: 13, fontWeight: 600, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', textTransform: 'capitalize' }}>{srvStatus.playing}</div>
+          <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
+            <button onClick={() => sendUi('previous')} style={qBtn}>{'⏮️'}</button>
+            <button onClick={() => sendUi('pause')} style={qBtn}>{'⏯️'}</button>
+            <button onClick={() => sendUi('next')} style={qBtn}>{'⏭️'}</button>
+          </div>
+        </div>
+      )}
+      {REMOTE && showMem && (
+        <div onClick={() => setShowMem(false)} style={{ position: 'absolute', inset: 0, zIndex: 83, display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'rgba(0,0,0,0.5)', backdropFilter: 'blur(5px)' }}>
+          <div onClick={(e) => e.stopPropagation()} style={{ width: 'min(92vw, 460px)', maxHeight: '80vh', overflowY: 'auto', borderRadius: 20, padding: 22, color: 'rgba(220, 240, 255, 0.95)', background: 'rgba(10, 25, 47, 0.62)', border: '1px solid rgba(125, 249, 255, 0.18)', boxShadow: '0 20px 60px rgba(0,0,0,0.6)' }}>
+            <div style={{ fontSize: 17, fontWeight: 700, marginBottom: 12 }}>What Jarvis remembers</div>
+            <input value={memInput} onChange={(e) => setMemInput(e.target.value)}
+              onKeyDown={(e) => { if (e.key === 'Enter' && memInput.trim()) { fetch(getBase() + '/memory', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ text: memInput.trim() }) }).then(() => setMemInput('')).catch(() => {}); } }}
+              placeholder="add a fact..." style={{ ...inStyle, width: '100%', boxSizing: 'border-box', marginBottom: 10 }} />
+            {srvMemory.length === 0 && <div style={{ fontSize: 13, opacity: 0.6 }}>Nothing yet. Say remember that, or add above.</div>}
+            {srvMemory.map((m) => (
+              <div key={m.id} style={{ position: 'relative', background: 'rgba(125, 249, 255, 0.12)', border: '1px solid rgba(125, 249, 255, 0.18)', borderRadius: 12, padding: '9px 12px', marginBottom: 6, fontSize: 13 }}>
+                <button onClick={() => { fetch(getBase() + '/memory/' + m.id, { method: 'DELETE' }).then(() => setSrvMemory((sm) => sm.filter((z) => z.id !== m.id))).catch(() => {}); }}
+                  title="Forget" style={{ position: 'absolute', top: 6, right: 8, background: 'transparent', border: 'none', color: 'rgba(125, 249, 255, 0.55)', cursor: 'pointer', fontSize: 15, lineHeight: 1, padding: 0 }}>{'×'}</button>
+                <span style={{ paddingRight: 16, display: 'block' }}>{m.text}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+      {REMOTE && showCheats && (
+        <div onClick={() => setShowCheats(false)} style={{ position: 'absolute', inset: 0, zIndex: 83, display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'rgba(0,0,0,0.5)', backdropFilter: 'blur(5px)' }}>
+          <div onClick={(e) => e.stopPropagation()} style={{ width: 'min(94vw, 600px)', maxHeight: '82vh', overflowY: 'auto', borderRadius: 20, padding: 24, color: 'rgba(220, 240, 255, 0.95)', background: 'rgba(10, 25, 47, 0.62)', border: '1px solid rgba(125, 249, 255, 0.18)', boxShadow: '0 20px 60px rgba(0,0,0,0.6)' }}>
+            <div style={{ fontSize: 18, fontWeight: 700, marginBottom: 14 }}>Voice commands</div>
+            {[['Media', ['play <song>', 'stop / resume', 'next / previous', 'louder / quieter', 'mute']], ['Desktop', ['open <app>', 'lock the pc', 'take a screenshot', 'snap left / right', 'set volume to 30 percent']], ['Files', ['datei suche then the name', 'open the file <name>', 'summarize the file <name>']], ['Time', ['set a timer for 5 minutes', 'wake me at 7', 'remind me to <x> in 10 minutes']], ['Smart', ['remember that <fact>', 'what do you know about me', 'explain this error', 'whats the weather tomorrow', 'start dictation', 'start my morning']], ['Info', ['whats 15 percent of 230', 'convert 100 euro to dollar', 'what time is it in tokyo', 'define <word>', 'whats the news']]].map((grp: any) => (
+              <div key={grp[0]} style={{ marginBottom: 14 }}>
+                <div style={{ fontSize: 12, opacity: 0.6, marginBottom: 6, letterSpacing: 1 }}>{grp[0]}</div>
+                {grp[1].map((it: string) => (<div key={it} style={{ fontSize: 13, padding: '3px 0', opacity: 0.92 }}>{'· ' + it}</div>))}
+              </div>
+            ))}
+            <div style={{ fontSize: 11, opacity: 0.55, textAlign: 'center', marginTop: 6 }}>tap outside to close</div>
+          </div>
+        </div>
+      )}
+      {REMOTE && srvSys && srvSys.ts > 0 && (
+        <div
+          onMouseDown={(e) => {
+            const sx = e.clientX, sy = e.clientY, ox = hudPos.x, oy = hudPos.y;
+            let last = { x: ox, y: oy };
+            const mv = (ev: MouseEvent) => { last = { x: Math.max(0, ox + ev.clientX - sx), y: Math.max(0, oy + ev.clientY - sy) }; setHudPos(last); };
+            const up = () => { window.removeEventListener('mousemove', mv); window.removeEventListener('mouseup', up); try { localStorage.setItem('jarvis_hudpos', JSON.stringify(last)); } catch { /* */ } };
+            window.addEventListener('mousemove', mv); window.addEventListener('mouseup', up);
+          }}
+          style={{ position: 'absolute', top: hudPos.y, left: hudPos.x, zIndex: 45, width: 154, padding: '8px 11px', background: 'rgba(10, 25, 47, 0.62)', border: '1px solid rgba(125, 249, 255, 0.18)', borderRadius: 12, backdropFilter: 'blur(6px)', color: 'rgba(220, 240, 255, 0.95)', fontSize: 10, cursor: 'move', userSelect: 'none' }}>
+          <div style={{ fontSize: 9, letterSpacing: 1.5, opacity: 0.6, marginBottom: 6 }}>SYSTEM Â· {srvSys.gpu_temp}Â°C</div>
+          {[['CPU', srvSys.cpu], ['RAM', srvSys.ram], ['GPU', srvSys.gpu_mem]].map((row: any) => (
+            <div key={row[0]} style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 4 }}>
+              <span style={{ width: 24, opacity: 0.7 }}>{row[0]}</span>
+              <div style={{ flex: 1, height: 4, borderRadius: 2, background: 'rgba(125, 249, 255, 0.12)', overflow: 'hidden' }}>
+                <div style={{ width: row[1] + '%', height: '100%', background: row[1] > 85 ? '#ef4444' : row[1] > 60 ? '#eab308' : 'rgba(34, 211, 238, 0.9)', transition: 'width 0.4s' }} />
+              </div>
+              <span style={{ width: 26, textAlign: 'right' }}>{row[1]}%</span>
+            </div>
+          ))}
         </div>
       )}
       {pendingLink && (
         <button onClick={() => { window.open(pendingLink.url, '_blank'); setPendingLink(null); }} title={pendingLink.url}
-          style={{ position: 'absolute', top: 12, left: '50%', transform: 'translateX(-50%)', zIndex: 60, padding: '8px 18px', borderRadius: 22, border: 'none', cursor: 'pointer', background: '#2563eb', color: '#fff', fontSize: 13 }}>
+          style={{ position: 'absolute', top: 12, left: '50%', transform: 'translateX(-50%)', zIndex: 60, padding: '8px 18px', borderRadius: 22, border: 'none', cursor: 'pointer', background: 'rgba(34, 211, 238, 0.85)', color: '#fff', fontSize: 13 }}>
           Open link
         </button>
       )}
@@ -1659,6 +2161,13 @@ export function JarvisHome() {
       )}
 
       {/* Input row unten */}
+      {REMOTE && (
+        <div style={{ display: 'flex', gap: 8, justifyContent: 'center', marginBottom: 8 }}>
+          <button onClick={() => sendUi('take a screenshot')} className="jarvis-home-btn" title="Screenshot"><Camera size={18} /></button>
+          <button onClick={() => setShowMem(true)} className="jarvis-home-btn" title="Memory"><Brain size={18} /></button>
+          <button onClick={() => setShowCheats(true)} className="jarvis-home-btn" title="Commands"><HelpCircle size={18} /></button>
+        </div>
+      )}
       <div className="jarvis-home-input-row">
         <button
           onClick={triggerWake}
@@ -2158,6 +2667,37 @@ const homeStyles = `
     gap: 0.6rem;
     z-index: 5;
   }
+  @keyframes jbar { 0%, 100% { transform: scaleY(0.25); opacity: 0.6; } 50% { transform: scaleY(1); opacity: 1; } }
+  .jbar { width: 3px; height: 20px; background: rgba(34, 211, 238, 0.92); border-radius: 2px; transform-origin: center; box-shadow: 0 0 8px rgba(34, 211, 238, 0.5); }
+  .bd-wrap{position:fixed;inset:0;z-index:81;overflow:hidden;background:radial-gradient(140% 120% at 50% 28%, rgba(10,26,48,0.6), rgba(1,3,8,0.97));animation:hudFade .5s ease;}
+  .bd-gridbg{position:absolute;inset:0;background-image:linear-gradient(rgba(125,249,255,0.05) 1px,transparent 1px),linear-gradient(90deg,rgba(125,249,255,0.05) 1px,transparent 1px);background-size:46px 46px;-webkit-mask-image:radial-gradient(circle at 50% 42%, black, transparent 68%);mask-image:radial-gradient(circle at 50% 42%, black, transparent 68%);animation:hudGrid 22s linear infinite;pointer-events:none;}
+  .bd-reactor{position:absolute;top:46%;left:50%;transform:translate(-50%,-50%);width:min(80vh,760px);height:min(80vh,760px);opacity:.42;pointer-events:none;}
+  .bd-scan{position:absolute;left:0;width:100%;height:2px;background:linear-gradient(90deg,transparent,rgba(125,249,255,0.45),transparent);animation:hudScan 6s ease-in-out infinite;pointer-events:none;}
+  .bd-deck{position:relative;height:100vh;display:grid;grid-template-columns:minmax(0,0.95fr) 1.5fr minmax(0,0.95fr);grid-template-rows:auto minmax(0,1fr) auto;gap:clamp(12px,1.5vw,20px);padding:clamp(16px,3vh,38px) clamp(16px,3vw,46px);box-sizing:border-box;}
+  .bd-panel{background:linear-gradient(160deg, rgba(8,20,38,0.62), rgba(4,11,22,0.62));border:1px solid rgba(125,249,255,0.18);border-radius:18px;padding:15px 17px;backdrop-filter:blur(7px);position:relative;min-height:0;animation:hudCascade .6s ease both;}
+  .bd-panel.sc{overflow-y:auto;}
+  .bd-cell{position:relative;min-height:0;display:flex;flex-direction:column;}
+  .bd-close{position:absolute;top:16px;right:20px;z-index:9;width:38px;height:38px;border-radius:50%;border:1px solid rgba(125,249,255,0.3);background:rgba(8,20,38,0.7);color:#bfefff;font-size:17px;cursor:pointer;display:flex;align-items:center;justify-content:center;}
+  .bd-close:hover{background:rgba(255,80,80,0.28);color:#fff;}
+  .bd-newsrow{display:flex;gap:12px;overflow-x:auto;padding-bottom:4px;}
+  .bd-newscard{flex:0 0 232px;border-radius:13px;overflow:hidden;background:rgba(255,255,255,0.04);border:1px solid rgba(125,249,255,0.1);text-decoration:none;color:inherit;transition:transform .15s, box-shadow .15s;}
+  .bd-newscard:hover{transform:translateY(-3px);box-shadow:0 12px 28px rgba(0,0,0,0.5);}
+  @media (max-width:900px){.bd-deck{display:block;height:100vh;overflow-y:auto;}.bd-deck>*{margin-bottom:14px;grid-column:auto !important;grid-row:auto !important;}.bd-reactor{opacity:.2;}.bd-panel.sc{overflow:visible;}}
+  @keyframes hudFade { from { opacity: 0; } to { opacity: 1; } }
+  @keyframes hudGrid { from { background-position: 0 0, 0 0; } to { background-position: 44px 44px, 44px 44px; } }
+  @keyframes hudSpin { to { transform: rotate(360deg); } }
+  @keyframes hudSpinR { to { transform: rotate(-360deg); } }
+  @keyframes hudScan { 0% { top: 0; opacity: 0; } 12% { opacity: 0.9; } 88% { opacity: 0.9; } 100% { top: 100%; opacity: 0; } }
+  @keyframes hudCascade { from { opacity: 0; transform: translateX(-12px); } to { opacity: 1; transform: none; } }
+  @keyframes hudGlow { 0%, 100% { opacity: 0.55; } 50% { opacity: 1; } }
+  @keyframes hudFloat { 0%, 100% { transform: translateY(0); } 50% { transform: translateY(-7px); } }
+  @keyframes hudReveal { 0% { opacity: 0; clip-path: inset(0 100% 0 0); filter: blur(4px); } 100% { opacity: 1; clip-path: inset(0 0 0 0); filter: blur(0); } }
+  @keyframes brFade { from { opacity: 0; } to { opacity: 1; } }
+  @keyframes brPop { 0% { opacity: 0; transform: translateY(20px) scale(0.95); } 100% { opacity: 1; transform: none; } }
+  @keyframes jbootFade { 0%, 65% { opacity: 1; } 100% { opacity: 0; visibility: hidden; } }
+  @keyframes jbootSweep { 0% { transform: translateX(-120%); } 100% { transform: translateX(120%); } }
+  @keyframes jbootText { 0% { opacity: 0; letter-spacing: 0.7em; filter: blur(6px); } 45% { opacity: 1; filter: blur(0); } 100% { opacity: 1; letter-spacing: 0.3em; } }
+  @keyframes jbootRing { 0% { transform: scale(0.6); opacity: 0; } 50% { opacity: 0.8; } 100% { transform: scale(1.4); opacity: 0; } }
   .jarvis-home-btn {
     width: 46px; height: 46px;
     display: flex; align-items: center; justify-content: center;
